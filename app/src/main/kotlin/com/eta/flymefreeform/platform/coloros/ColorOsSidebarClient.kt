@@ -1,0 +1,651 @@
+package com.eta.flymefreeform.platform.coloros
+
+import android.annotation.SuppressLint
+import android.app.ActivityManager
+import android.content.BroadcastReceiver
+import android.content.ComponentCallbacks
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.ServiceConnection
+import android.content.res.Configuration
+import android.hardware.display.DisplayManager
+import android.os.Handler
+import android.os.IBinder
+import android.os.Message
+import android.os.Messenger
+import android.os.RemoteException
+import android.os.SystemClock
+import android.os.UserHandle
+import android.os.UserManager
+import android.provider.Settings
+import android.util.Log
+import android.view.Display
+import com.eta.flymefreeform.window.MorePanelSession
+import java.util.UUID
+import java.lang.reflect.InvocationTargetException
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+
+/** system_server 只持有一次交接；包查询、绑定和 Binder 发送均在有界工作队列执行。 */
+@SuppressLint("PrivateApi")
+internal class ColorOsSidebarClient(
+    private val context: Context,
+    private val handler: Handler,
+    private val log: (Int, String, Throwable?) -> Unit,
+) {
+    enum class Outcome { Shown, Fallback, Abandoned }
+
+    /**
+     * 免会话绑定（目录请求 / 工具执行）使用的 bind 标志：
+     * AUTO_CREATE 拉起侧边栏进程，0x10000000 = BIND_ALLOW_FOREGROUND_SERVICE_STARTS
+     * （API 31 SystemApi，公开 SDK 无常量）授予它在绑定期间启动前台服务的许可——
+     * 扇形触发工具时侧边栏处于后台，识屏等工具内部 startForegroundService 会被
+     * Android 12+ 的后台 FGS 限制拒绝且异常被原厂吞掉。
+     */
+    private val TOOL_BIND_FLAGS = Context.BIND_AUTO_CREATE or 0x10000000
+
+    /** 开机目录拉取失败的重试上限与间隔：覆盖侧边栏冷启动窗口（实测约 30 秒内就绪）。 */
+    private val CATALOG_RETRY_LIMIT = 3
+
+    private val CATALOG_RETRY_INTERVAL_MS = 15_000L
+
+    /**
+     * 工具执行绑定的延迟解绑时长：startSysTool 异步链（含内部线程切换）到
+     * startForegroundService 的实测延迟在几十毫秒级，5 秒余量充足且不占资源
+     * （绑定只是豁免凭证，不拉活进程）。
+     */
+    private val TOOL_UNBIND_DELAY_MS = 5_000L
+
+    private val worker =
+        ThreadPoolExecutor(
+            1, 1, 10L, TimeUnit.SECONDS, ArrayBlockingQueue(4),
+            { task -> Thread(task, "FlymeFreeform-Sidebar") },
+            ThreadPoolExecutor.AbortPolicy(),
+        ).apply { allowCoreThreadTimeOut(true) }
+    private val displayManager = context.getSystemService(DisplayManager::class.java)
+    private var current: Request? = null
+    private val reply = Messenger(Handler(handler.looper, ::receive))
+    private var lastFailureAt = -5_000L
+
+    val isPending: Boolean get() = current?.committed == false
+
+    /** 侧边栏工具目录（经面板会话中转到 system_server，再由 system_server 转发给模块 App）。 */
+    var onToolCatalog: ((String) -> Unit)? = null
+
+    /** 「最近小窗」点击转小窗启动（侧边栏进程无法自建小窗）。 */
+    var onLaunchComponent: ((ComponentName) -> Unit)? = null
+
+    /** 面板条目点击 → 记入「最近小窗」。 */
+    var onRecentComponent: ((ComponentName) -> Unit)? = null
+
+    /**
+     * @author bomo 打开「全部」面板。
+     *
+     * @param leftSide 本次实际呼出方位：true = 左下角呼出（面板贴左），false = 右下角呼出（面板贴右）。
+     *   必须由 system_server 按手势方位传入 —— 原厂 `mIsLeft` 标志位在本模块自建面板路径下恒为默认值，
+     *   依赖它会导致左右两侧都贴左。
+     */
+    fun open(
+        leftSide: Boolean,
+        beforeOpen: () -> Boolean, onResult: (Outcome) -> Unit,
+        onExitStarted: () -> Unit, onHideBackdrop: (() -> Unit) -> Unit, onClosed: () -> Unit,
+    ): Boolean {
+        if (current != null) return false
+        val request =
+            Request(
+                MorePanelSession(UUID.randomUUID().toString(), SystemClock.uptimeMillis() + SidebarProtocol.PREPARE_TIMEOUT_MS),
+                leftSide,
+                beforeOpen, onResult, onExitStarted, onHideBackdrop, onClosed,
+            )
+        current = request
+        try {
+            request.watch()
+            scheduleTimeout(request)
+            execute(request) { prepareAndBind(request) }
+        } catch (exception: RuntimeException) {
+            logFailure("SIDEBAR_BIND_FAILED", exception)
+            apply(request, request.session.cleaned(request.session.id))
+        }
+        return true
+    }
+
+    /**
+     * 免会话执行侧边栏工具（小布识屏 / 屏幕翻译等）。
+     *
+     * 工具是侧边栏进程内的 `AbsTool`，无法从 system_server 直接启动，
+     * 因此临时绑定一次 `UIService`、发一条 [SidebarProtocol.RUN_TOOL] 后立即解绑；
+     * 面板会话状态机完全不受影响（两者可以同时存在，也可以不打开面板单独执行）。
+     *
+     * @param alias 侧边栏工具别名（来自工具目录，已在侧边栏侧校验过字符集）
+     * @return 是否成功发起绑定（执行结果由侧边栏进程的日志体现）
+     */
+    fun runTool(alias: String, clickX: Float = 0f, clickY: Float = 0f): Boolean {
+        if (!SidebarProtocol.isValidToolAlias(alias)) return false
+        return try {
+            worker.execute { sendToolRequest(alias, clickX, clickY) }
+            true
+        } catch (exception: RuntimeException) {
+            logFailure("SIDEBAR_TOOL_QUEUE_FULL", exception)
+            false
+        }
+    }
+
+    /**
+     * 开机向侧边栏索要工具目录：回包经 [reply]（类级 Messenger）走
+     * TOOL_CATALOG_PAYLOAD 分支 → onToolCatalog → 写 Settings.Global。
+     *
+     * 开机瞬间调用会赶在侧边栏就绪前（实测 SIDEBAR_TOOL_TARGET_UNAVAILABLE），
+     * 因此失败后按 [CATALOG_RETRY_INTERVAL_MS] 间隔重试 [CATALOG_RETRY_LIMIT] 次。
+     *
+     * @param retry 已重试次数；外部调用保持默认 0
+     */
+    fun requestToolCatalog(retry: Int = 0) {
+        try {
+            worker.execute {
+                try {
+                    val userId = ActivityManager::class.java.getMethod("getCurrentUser").invoke(null) as Int
+                    val user = UserHandle::class.java.getMethod("of", Int::class.javaPrimitiveType).invoke(null, userId) as UserHandle
+                    val userContext =
+                        Context::class.java.getMethod("createContextAsUser", UserHandle::class.java, Int::class.javaPrimitiveType)
+                            .invoke(context, user, 0) as Context
+                    val uid = ColorOsSidebarTarget.supportedUid(userContext)
+                        ?: run {
+                            logFailure("SIDEBAR_TOOL_TARGET_UNAVAILABLE")
+                            scheduleCatalogRetry(retry)
+                            return@execute
+                        }
+                    val connection =
+                        object : ServiceConnection {
+                            override fun onServiceConnected(name: ComponentName, service: IBinder) {
+                                try {
+                                    val request =
+                                        Message.obtain().apply {
+                                            what = SidebarProtocol.REQUEST_TOOL_CATALOG
+                                            arg1 = SidebarProtocol.VERSION
+                                            replyTo = reply
+                                            data = android.os.Bundle().apply {
+                                                putInt(SidebarProtocol.TARGET_UID, uid)
+                                            }
+                                        }
+                                    Messenger(service).send(request)
+                                } catch (exception: RemoteException) {
+                                    logFailure("SIDEBAR_CATALOG_REQUEST_FAILED", exception)
+                                } finally {
+                                    runCatching { userContext.unbindService(this) }
+                                }
+                            }
+
+                            override fun onServiceDisconnected(name: ComponentName) = Unit
+                        }
+                    val intent = Intent(ColorOsSidebarTarget.BIND_ACTION).setComponent(COMPONENT)
+                    val bound =
+                        userContext.bindService(intent, TOOL_BIND_FLAGS, { task -> handler.post(task) }, connection)
+                    if (!bound) {
+                        logFailure("SIDEBAR_CATALOG_BIND_FAILED")
+                        runCatching { userContext.unbindService(connection) }
+                        scheduleCatalogRetry(retry)
+                    }
+                } catch (exception: Exception) {
+                    logFailure("SIDEBAR_CATALOG_REQUEST_FAILED", exception)
+                    scheduleCatalogRetry(retry)
+                }
+            }
+        } catch (exception: RuntimeException) {
+            logFailure("SIDEBAR_TOOL_QUEUE_FULL", exception)
+        }
+    }
+
+    /** 目录拉取失败后的定时重试；超过上限放弃（面板打开/RUN_TOOL 时还有补传点）。 */
+    private fun scheduleCatalogRetry(retry: Int) {
+        if (retry >= CATALOG_RETRY_LIMIT) return
+        handler.postDelayed({ requestToolCatalog(retry + 1) }, CATALOG_RETRY_INTERVAL_MS)
+    }
+
+    private fun sendToolRequest(alias: String, clickX: Float, clickY: Float) {
+        try {
+            val userId = ActivityManager::class.java.getMethod("getCurrentUser").invoke(null) as Int
+            val user = UserHandle::class.java.getMethod("of", Int::class.javaPrimitiveType).invoke(null, userId) as UserHandle
+            val userContext =
+                Context::class.java.getMethod("createContextAsUser", UserHandle::class.java, Int::class.javaPrimitiveType)
+                    .invoke(context, user, 0) as Context
+            val uid = ColorOsSidebarTarget.supportedUid(userContext)
+            if (uid == null) {
+                logFailure("SIDEBAR_TOOL_TARGET_UNAVAILABLE")
+                return
+            }
+            val connection =
+                object : ServiceConnection {
+                    override fun onServiceConnected(name: ComponentName, service: IBinder) {
+                        try {
+                            Messenger(service).send(
+                                SidebarProtocol.toolMessage(alias, uid, clickX, clickY, reply),
+                            )
+                        } catch (exception: RemoteException) {
+                            logFailure("SIDEBAR_TOOL_SEND_FAILED", exception)
+                        } finally {
+                            // 不立即解绑：startSysTool 内部异步执行，真正调 startForegroundService
+                            // 晚于本方法返回；BIND_ALLOW_FOREGROUND_SERVICE_STARTS 的 FGS 豁免
+                            // 只在绑定存续期间有效（logcat 实测立即解绑时 bindFromPackage:null 被拒）。
+                            // 延迟解绑为执行窗口保住豁免；期间重复触发的绑定各自独立计次。
+                            handler.postDelayed({
+                                runCatching { userContext.unbindService(this) }
+                            }, TOOL_UNBIND_DELAY_MS)
+                        }
+                    }
+
+                    override fun onServiceDisconnected(name: ComponentName) = Unit
+                }
+            val intent = Intent(ColorOsSidebarTarget.BIND_ACTION).setComponent(COMPONENT)
+            val bound = userContext.bindService(intent, TOOL_BIND_FLAGS, { task -> handler.post(task) }, connection)
+            if (!bound) {
+                logFailure("SIDEBAR_TOOL_BIND_FAILED")
+                runCatching { userContext.unbindService(connection) }
+            }
+        } catch (exception: Exception) {
+            logFailure("SIDEBAR_TOOL_FAILED", exception)
+        }
+    }
+
+    fun cancel() {
+        val request = current ?: return
+        if (request.committed) {
+            if (request.closing) return
+            request.closing = true
+            request.session.deadline = SystemClock.uptimeMillis() + SidebarProtocol.CLEANUP_TIMEOUT_MS
+            send(request, SidebarProtocol.CANCEL)
+            scheduleTimeout(request)
+            return
+        }
+        apply(request, request.session.cancel(allowFallback = false))
+    }
+
+    private fun prepareAndBind(request: Request) {
+        val userId = ActivityManager::class.java.getMethod("getCurrentUser").invoke(null) as Int
+        val user = UserHandle::class.java.getMethod("of", Int::class.javaPrimitiveType).invoke(null, userId) as UserHandle
+        val userContext =
+            Context::class.java.getMethod("createContextAsUser", UserHandle::class.java, Int::class.javaPrimitiveType)
+                .invoke(context, user, 0) as Context
+        request.userContext = userContext
+        val uid = ColorOsSidebarTarget.supportedUid(userContext)
+        if (userContext.getSystemService(UserManager::class.java)?.isUserForeground != true) {
+            handler.post { apply(request, request.session.abort(request.session.id)) }
+            return
+        }
+        if (uid == null ||
+            Settings.Secure.getInt(userContext.contentResolver, "edge_panel_toggle", -1) != 1
+        ) {
+            handler.post { apply(request, request.session.cleaned(request.session.id)) }
+            return
+        }
+        request.targetUid = uid
+        if (!request.active.get() || SystemClock.uptimeMillis() >= request.session.deadline) return
+        // 让常驻端按 NONE 任务绑定 UI 并注册数据回调；单独创建 UIService 不会完成这次握手。
+        val provider = userContext.contentResolver.acquireUnstableContentProviderClient(ColorOsSidebarTarget.PROVIDER_AUTHORITY)
+            ?: throw IllegalStateException("SIDEBAR_PREPARE_PROVIDER_UNAVAILABLE")
+        provider.use { it.call(ColorOsSidebarTarget.PREPARE_METHOD, null, null) }
+        if (!request.active.get() || SystemClock.uptimeMillis() >= request.session.deadline) return
+        val intent = Intent(ColorOsSidebarTarget.BIND_ACTION).setComponent(COMPONENT).setIdentifier(request.session.id)
+        val bound = userContext.bindService(intent, Context.BIND_AUTO_CREATE, { task -> handler.post(task) }, request.connection)
+        request.bound.set(bound)
+        handler.post {
+            if (!request.active.get()) unbind(request)
+            else if (!bound) apply(request, request.session.cleaned(request.session.id))
+        }
+    }
+
+    private fun receive(message: Message): Boolean {
+        // 免会话消息（目录载荷 / 小窗启动与记录请求）先于会话校验处理。
+        if (message.what == SidebarProtocol.RECORD_RECENT && message.arg1 == SidebarProtocol.VERSION) {
+            val component = message.peekData()
+                ?.getString(SidebarProtocol.RECORD_RECENT_EXTRA)
+                ?.let(ComponentName::unflattenFromString)
+            if (component != null) handler.post { onRecentComponent?.invoke(component) }
+            return true
+        }
+        // 免会话消息（目录载荷 / 小窗启动请求）先于会话校验处理。
+        if (message.what == SidebarProtocol.LAUNCH_COMPONENT && message.arg1 == SidebarProtocol.VERSION) {
+            val flat = message.peekData()?.getString(SidebarProtocol.LAUNCH_COMPONENT_EXTRA)
+            val component = flat?.let(ComponentName::unflattenFromString)
+            if (component != null) handler.post { onLaunchComponent?.invoke(component) }
+            return true
+        }
+        // 目录载荷与会话无关（侧边栏在面板打开时发布），因此先于会话校验处理；
+        // 发送方必须与载荷中自报的 TARGET_UID（侧边栏 uid）一致，防止任意进程伪造目录。
+        if (message.what == SidebarProtocol.TOOL_CATALOG_PAYLOAD && message.arg1 == SidebarProtocol.VERSION) {
+            val data = message.peekData()
+            val expectedUid = data?.getInt(SidebarProtocol.TARGET_UID, -1) ?: -1
+            if (message.sendingUid != expectedUid) return true
+            val text = data?.getString(SidebarProtocol.TOOL_CATALOG_TEXT)
+            if (!text.isNullOrEmpty()) handler.post { onToolCatalog?.invoke(text) }
+            return true
+        }
+        val request = current ?: return true
+        if (!SidebarProtocol.isTrustedPeer(message.sendingUid, request.targetUid, message.arg1)) return true
+        try {
+            val id = message.peekData()?.getString(SidebarProtocol.REQUEST_ID) ?: return true
+            if (id == request.session.id && message.what == SidebarProtocol.EXIT_STARTED) {
+                request.onExitStarted?.invoke()
+                return true
+            }
+            if (request.committed && id == request.session.id && message.what == SidebarProtocol.HIDE_BACKDROP) {
+                request.onHideBackdrop?.invoke {
+                    if (current === request && !request.closing) send(request, SidebarProtocol.BACKDROP_HIDDEN)
+                }
+                return true
+            }
+            if (request.committed && id == request.session.id &&
+                message.what in setOf(SidebarProtocol.CLEANED, SidebarProtocol.ABORTED)
+            ) {
+                finish(request, Outcome.Abandoned)
+                return true
+            }
+            val now = SystemClock.uptimeMillis()
+            val effect =
+                when (message.what) {
+                    SidebarProtocol.READY -> request.session.ready(id, now, now + SidebarProtocol.OPEN_TIMEOUT_MS)
+                    SidebarProtocol.SHOWN -> request.session.shown(id, now)
+                    SidebarProtocol.COMMITTED -> request.session.committed(id)
+                    SidebarProtocol.CLEANED -> request.session.cleaned(id)
+                    SidebarProtocol.ABORTED -> request.session.abort(id)
+                    else -> MorePanelSession.Effect.None
+                }
+            apply(request, effect)
+        } catch (exception: RuntimeException) {
+            logFailure("SIDEBAR_REPLY_INVALID", exception)
+            apply(request, request.session.cancel(allowFallback = true))
+        }
+        return true
+    }
+
+    private fun apply(request: Request, effect: MorePanelSession.Effect) {
+        if (current !== request) return
+        when (effect) {
+            MorePanelSession.Effect.None -> Unit
+            MorePanelSession.Effect.Open -> {
+                if (request.beforeOpen?.invoke() == true) {
+                    send(request, SidebarProtocol.OPEN)
+                    scheduleTimeout(request)
+                } else {
+                    apply(request, request.session.cancel(allowFallback = false))
+                }
+            }
+            MorePanelSession.Effect.Confirm -> send(request, SidebarProtocol.CONFIRM)
+            MorePanelSession.Effect.Cancel -> {
+                send(request, SidebarProtocol.CANCEL)
+                request.session.deadline = SystemClock.uptimeMillis() + SidebarProtocol.CLEANUP_TIMEOUT_MS
+                scheduleTimeout(request)
+            }
+            MorePanelSession.Effect.Fallback -> finish(request, Outcome.Fallback)
+            MorePanelSession.Effect.Shown -> {
+                // 窗口存活期间保留服务绑定，避免原生常驻端 stopService 后 UIService 被销毁。
+                request.committed = true
+                handler.removeCallbacks(request.timeout)
+                val result = request.onResult
+                request.beforeOpen = null
+                request.onResult = null
+                cleanup("SIDEBAR_RESULT_HANDLING_FAILED") { result?.invoke(Outcome.Shown) }
+            }
+            MorePanelSession.Effect.Abandon -> finish(request, Outcome.Abandoned)
+        }
+    }
+
+    private fun send(request: Request, what: Int) {
+        val remote = request.remote ?: return
+        val deadline = request.session.deadline
+        execute(request) {
+            if (request.active.get()) {
+                // @author bomo 每条会话消息都带上呼出方位：侧边栏在 PREPARE 阶段就构造面板内容，
+                // 早于 OPEN，因此不能只在 OPEN 上带。
+                remote.send(
+                    SidebarProtocol.message(
+                        what,
+                        request.session.id,
+                        deadline,
+                        request.targetUid,
+                        reply,
+                        panelLeftSide = request.leftSide,
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun scheduleTimeout(request: Request) {
+        handler.removeCallbacks(request.timeout)
+        handler.postAtTime(request.timeout, request.session.deadline)
+    }
+
+    private fun execute(request: Request, block: () -> Unit) {
+        try {
+            worker.execute {
+                if (!request.active.get()) return@execute
+                try {
+                    block()
+                } catch (exception: ReflectiveOperationException) {
+                    if (exception is InvocationTargetException && exception.cause is Error) throw exception.cause as Error
+                    transportFailure(request, exception)
+                } catch (exception: RemoteException) {
+                    transportFailure(request, exception)
+                } catch (exception: RuntimeException) {
+                    transportFailure(request, exception)
+                }
+            }
+        } catch (exception: RejectedExecutionException) {
+            transportFailure(request, exception)
+        }
+    }
+
+    private fun transportFailure(request: Request, exception: Exception) {
+        handler.post {
+            if (current !== request) return@post
+            logFailure("SIDEBAR_TRANSPORT_FAILED", exception)
+            if (request.committed) finish(request, Outcome.Abandoned)
+            else apply(request, request.session.cancel(allowFallback = true))
+        }
+    }
+
+    private fun finish(request: Request, outcome: Outcome) {
+        if (current !== request) return
+        current = null
+        request.active.set(false)
+        val onResult = request.onResult
+        val onClosed = request.onClosed.takeIf { request.committed }
+        request.beforeOpen = null
+        request.onResult = null
+        request.onClosed = null
+        request.onExitStarted = null
+        request.onHideBackdrop = null
+        handler.removeCallbacks(request.timeout)
+        request.stopWatching()
+        cleanup("SIDEBAR_DEATH_LISTENER_REMOVE_FAILED") {
+            request.remote?.binder?.unlinkToDeath(request.death, 0)
+        }
+        request.remote = null
+        unbind(request)
+        cleanup("SIDEBAR_RESULT_HANDLING_FAILED") { onResult?.invoke(outcome) }
+        cleanup("SIDEBAR_CLOSE_HANDLING_FAILED") { onClosed?.invoke() }
+    }
+
+    private fun unbind(request: Request) {
+        val userContext = request.userContext ?: return
+        if (!request.bound.compareAndSet(true, false)) return
+        try {
+            worker.execute {
+                try {
+                    userContext.unbindService(request.connection)
+                } catch (exception: RuntimeException) {
+                    handler.post { logFailure("SIDEBAR_UNBIND_FAILED", exception) }
+                }
+            }
+        } catch (exception: RejectedExecutionException) {
+            // 队列满时仍需释放已建立的连接；此处没有等待远端 Binder 返回结果。
+            cleanup("SIDEBAR_UNBIND_FAILED") { userContext.unbindService(request.connection) }
+            logFailure("SIDEBAR_UNBIND_QUEUE_FULL", exception)
+        }
+    }
+
+    private fun cleanup(code: String, action: () -> Unit) {
+        try {
+            action()
+        } catch (exception: RuntimeException) {
+            logFailure(code, exception)
+        }
+    }
+
+    private fun logFailure(code: String, exception: Exception? = null) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastFailureAt >= 5_000L) {
+            lastFailureAt = now
+            log(Log.WARN, code, exception)
+        }
+    }
+
+    private inner class Request(
+        val session: MorePanelSession,
+        /** @author bomo 本会话的面板呼出方位，随每条会话消息下发（见 [SidebarProtocol.PANEL_LEFT_SIDE]）。 */
+        val leftSide: Boolean,
+        var beforeOpen: (() -> Boolean)?,
+        var onResult: ((Outcome) -> Unit)?,
+        var onExitStarted: (() -> Unit)?,
+        var onHideBackdrop: ((() -> Unit) -> Unit)?,
+        var onClosed: (() -> Unit)?,
+    ) : ComponentCallbacks, DisplayManager.DisplayListener {
+        val active = AtomicBoolean(true)
+        val bound = AtomicBoolean(false)
+        @Volatile var userContext: Context? = null
+        @Volatile var targetUid = -1
+        var remote: Messenger? = null
+        var committed = false
+        var closing = false
+        private var receiverRegistered = false
+        private var componentsRegistered = false
+        private var displayRegistered = false
+        private val rotation = displayManager.getDisplay(Display.DEFAULT_DISPLAY)?.rotation
+        val timeout = Runnable {
+            if (current === this) {
+                if (committed) {
+                    logFailure("SIDEBAR_CLEANUP_TIMEOUT")
+                    finish(this, Outcome.Abandoned)
+                    return@Runnable
+                }
+                logFailure(
+                    when (session.phase) {
+                        MorePanelSession.Phase.Preparing -> "SIDEBAR_PREPARE_TIMEOUT"
+                        MorePanelSession.Phase.Cancelling -> "SIDEBAR_CLEANUP_TIMEOUT"
+                        else -> "SIDEBAR_OPEN_TIMEOUT"
+                    },
+                )
+                apply(this, session.timeout())
+            }
+        }
+        val death = IBinder.DeathRecipient {
+            handler.post {
+                // Messenger Binder 随侧边栏进程死亡，原进程的窗口也由系统回收。
+                if (current === this) {
+                    if (committed) finish(this, Outcome.Abandoned)
+                    else apply(this, session.cleaned(session.id))
+                }
+            }
+        }
+        private val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) = invalidate()
+        }
+        val connection = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName, service: IBinder) {
+                if (current !== this@Request) return
+                if (name != COMPONENT) {
+                    apply(this@Request, session.cleaned(session.id))
+                    return
+                }
+                execute(this@Request) {
+                    if (service.interfaceDescriptor != SidebarProtocol.DESCRIPTOR) {
+                        handler.post { apply(this@Request, session.cleaned(session.id)) }
+                        return@execute
+                    }
+                    service.linkToDeath(death, 0)
+                    handler.post {
+                        if (current !== this@Request) {
+                            service.unlinkToDeath(death, 0)
+                        } else {
+                            remote = Messenger(service)
+                            send(this@Request, SidebarProtocol.PREPARE)
+                        }
+                    }
+                }
+            }
+
+            override fun onServiceDisconnected(name: ComponentName) {
+                if (current === this@Request) {
+                    if (committed) finish(this@Request, Outcome.Abandoned)
+                    else apply(this@Request, session.cancel(allowFallback = true))
+                }
+            }
+
+            override fun onBindingDied(name: ComponentName) {
+                if (current === this@Request) {
+                    if (committed) finish(this@Request, Outcome.Abandoned)
+                    else apply(this@Request, session.cancel(allowFallback = true))
+                }
+            }
+
+            override fun onNullBinding(name: ComponentName) {
+                if (current === this@Request) apply(this@Request, session.cleaned(session.id))
+            }
+        }
+
+        fun watch() {
+            context.registerReceiver(
+                receiver,
+                IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_OFF)
+                    addAction(SidebarProtocol.ACTION_USER_SWITCHED)
+                },
+                Context.RECEIVER_NOT_EXPORTED,
+            )
+            receiverRegistered = true
+            context.registerComponentCallbacks(this)
+            componentsRegistered = true
+            displayManager.registerDisplayListener(this, handler)
+            displayRegistered = true
+        }
+
+        fun stopWatching() {
+            if (receiverRegistered) {
+                receiverRegistered = false
+                cleanup("SIDEBAR_RECEIVER_REMOVE_FAILED") { context.unregisterReceiver(receiver) }
+            }
+            if (componentsRegistered) {
+                componentsRegistered = false
+                cleanup("SIDEBAR_CONFIGURATION_LISTENER_REMOVE_FAILED") { context.unregisterComponentCallbacks(this) }
+            }
+            if (displayRegistered) {
+                displayRegistered = false
+                cleanup("SIDEBAR_DISPLAY_LISTENER_REMOVE_FAILED") { displayManager.unregisterDisplayListener(this) }
+            }
+        }
+
+        private fun invalidate() {
+            if (current === this) cancel()
+        }
+
+        override fun onConfigurationChanged(newConfig: Configuration) = invalidate()
+        @Suppress("OVERRIDE_DEPRECATION")
+        override fun onLowMemory() = Unit
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) {
+            if (displayId == Display.DEFAULT_DISPLAY) invalidate()
+        }
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId == Display.DEFAULT_DISPLAY && displayManager.getDisplay(displayId)?.rotation != rotation) invalidate()
+        }
+    }
+
+    private companion object {
+        val COMPONENT = ComponentName(ColorOsSidebarTarget.PACKAGE_NAME, ColorOsSidebarTarget.SERVICE_CLASS)
+    }
+}

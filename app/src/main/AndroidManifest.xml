@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <queries>
+        <package android:name="com.coloros.smartsidebar" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <!--
+      @author bomo App → Hook 进程的配置推送权限（签名级）。
+      只有与模块同签名的应用能持有它；Hook 进程注册接收器时要求该权限，
+      于是「发送方是谁」由框架判定，不依赖 getSentFromUid（对普通应用恒为 -1）。
+    -->
+    <permission
+        android:name="com.eta.flymefreeform.permission.CONFIG_PUSH"
+        android:protectionLevel="signature" />
+
+    <uses-permission android:name="com.eta.flymefreeform.permission.CONFIG_PUSH" />
+
+    <application
+        android:name=".FlymeFreeformApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.FlymeFreeform">
+
+        <activity
+            android:name=".MainActivity"
+            android:enableOnBackInvokedCallback="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Hook 进程（system_server / 侧边栏）的远端配置是只读的，共享状态（最近小窗、工具目录）
+          改由它们广播、本 App 落盘。导出注册才能接收其它 UID 的广播，载荷在接收端做校验。
+        -->
+        <receiver
+            android:name=".framework.SharedStateReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.eta.flymefreeform.action.SHARED_STATE" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

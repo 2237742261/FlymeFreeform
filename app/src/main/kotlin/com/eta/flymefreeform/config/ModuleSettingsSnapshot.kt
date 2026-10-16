@@ -1,0 +1,239 @@
+package com.eta.flymefreeform.config
+
+import android.content.ComponentName
+import android.content.SharedPreferences
+
+internal data class ModuleSettingsSnapshot(
+    val enabled: Boolean = ModulePreferences.DEFAULT_ENABLED,
+    val leftCornerEnabled: Boolean = ModulePreferences.DEFAULT_CORNER_ENABLED,
+    val rightCornerEnabled: Boolean = ModulePreferences.DEFAULT_CORNER_ENABLED,
+    val cornerTriggerRangeDp: Int = ModulePreferences.DEFAULT_CORNER_TRIGGER_RANGE_DP,
+    /** @author bomo 触发热区形状（见 [TriggerShape]）；默认扇形，即改造前的原有行为。 */
+    val triggerShape: TriggerShape = TriggerShape.DEFAULT,
+    /** @author bomo 触发热区横向长度 dp（三角形使用）；未配置时沿用扇形半径值。 */
+    val triggerHorizontalDp: Int = ModulePreferences.DEFAULT_CORNER_TRIGGER_RANGE_DP,
+    /** @author bomo 触发热区纵向高度 dp（三角形使用）；未配置时沿用扇形半径值。 */
+    val triggerVerticalDp: Int = ModulePreferences.DEFAULT_CORNER_TRIGGER_RANGE_DP,
+    /** @author bomo 「全部」面板整体缩放百分比（见 `ModulePreferences.KEY_PANEL_SCALE_PERCENT`）。 */
+    val panelScalePercent: Int = ModulePreferences.DEFAULT_PANEL_SCALE_PERCENT,
+    /** @author bomo 角落轮盘整体缩放百分比（见 `ModulePreferences.KEY_RADIAL_SCALE_PERCENT`）。 */
+    val radialScalePercent: Int = ModulePreferences.DEFAULT_RADIAL_SCALE_PERCENT,
+    val pinsSaved: Boolean = false,
+    val pinnedComponents: List<ComponentName> = emptyList(),
+    val innerPinsSaved: Boolean = false,
+    val innerPinnedComponents: List<ComponentName> = emptyList(),
+    val outsideTapCloseMode: OutsideTapCloseMode =
+        ModulePreferences.DEFAULT_OUTSIDE_TAP_CLOSE_MODE,
+    val handleSwipeUpToMiniEnabled: Boolean =
+        ModulePreferences.DEFAULT_HANDLE_SWIPE_UP_TO_MINI_ENABLED,
+    val pauseInLandscape: Boolean = ModulePreferences.DEFAULT_PAUSE_IN_LANDSCAPE,
+    val pauseInGameMode: Boolean = ModulePreferences.DEFAULT_PAUSE_IN_GAME_MODE,
+    /** @author bomo 开发模式（诊断日志总开关）；默认关，见 [ModulePreferences.KEY_DEVELOPER_MODE]。 */
+    val developerMode: Boolean = ModulePreferences.DEFAULT_DEVELOPER_MODE,
+) {
+    fun isPausedByEnvironment(landscape: Boolean, gameMode: Boolean): Boolean =
+        (pauseInLandscape && landscape) || (pauseInGameMode && gameMode)
+
+    fun writeTo(editor: SharedPreferences.Editor): SharedPreferences.Editor {
+        editor
+            .putBoolean(ModulePreferences.KEY_MODULE_ENABLED, enabled)
+            .putBoolean(ModulePreferences.KEY_LEFT_CORNER_ENABLED, leftCornerEnabled)
+            .putBoolean(ModulePreferences.KEY_RIGHT_CORNER_ENABLED, rightCornerEnabled)
+            .putBoolean(ModulePreferences.KEY_PAUSE_IN_LANDSCAPE, pauseInLandscape)
+            .putBoolean(ModulePreferences.KEY_PAUSE_IN_GAME_MODE, pauseInGameMode)
+            .putBoolean(ModulePreferences.KEY_DEVELOPER_MODE, developerMode)
+            .putInt(
+                ModulePreferences.KEY_CORNER_TRIGGER_RANGE_DP,
+                ModulePreferences.coerceCornerTriggerRangeDp(cornerTriggerRangeDp),
+            )
+            .putInt(
+                ModulePreferences.KEY_TRIGGER_SHAPE,
+                triggerShape.storedValue,
+            )
+            .putInt(
+                ModulePreferences.KEY_TRIGGER_HORIZONTAL_DP,
+                ModulePreferences.coerceTriggerExtentDp(triggerHorizontalDp),
+            )
+            .putInt(
+                ModulePreferences.KEY_TRIGGER_VERTICAL_DP,
+                ModulePreferences.coerceTriggerExtentDp(triggerVerticalDp),
+            )
+            .putInt(
+                ModulePreferences.KEY_PANEL_SCALE_PERCENT,
+                ModulePreferences.coercePanelScalePercent(panelScalePercent),
+            )
+            .putInt(
+                ModulePreferences.KEY_RADIAL_SCALE_PERCENT,
+                ModulePreferences.coerceRadialScalePercent(radialScalePercent),
+            )
+            .putInt(
+                ModulePreferences.KEY_OUTSIDE_TAP_CLOSE_MODE,
+                outsideTapCloseMode.storedValue,
+            )
+            .putBoolean(
+                ModulePreferences.KEY_HANDLE_SWIPE_UP_TO_MINI_ENABLED,
+                handleSwipeUpToMiniEnabled,
+            )
+        if (pinsSaved) {
+            editor.putString(
+                ModulePreferences.KEY_CORNER_PINS,
+                encodePinnedComponents(pinnedComponents),
+            )
+        } else {
+            editor.remove(ModulePreferences.KEY_CORNER_PINS)
+        }
+        if (innerPinsSaved) {
+            editor.putString(
+                ModulePreferences.KEY_CORNER_INNER_PINS,
+                encodeComponents(innerPinnedComponents, ModulePreferences.MAX_INNER_APPS),
+            )
+        } else {
+            editor.remove(ModulePreferences.KEY_CORNER_INNER_PINS)
+        }
+        return editor
+    }
+
+    companion object {
+        fun readFrom(preferences: SharedPreferences): ModuleSettingsSnapshot {
+            val enabled =
+                preferences.getBoolean(
+                    ModulePreferences.KEY_MODULE_ENABLED,
+                    ModulePreferences.DEFAULT_ENABLED,
+                )
+            val leftEnabled =
+                preferences.getBoolean(
+                    ModulePreferences.KEY_LEFT_CORNER_ENABLED,
+                    ModulePreferences.DEFAULT_CORNER_ENABLED,
+                )
+            val rightEnabled =
+                preferences.getBoolean(
+                    ModulePreferences.KEY_RIGHT_CORNER_ENABLED,
+                    ModulePreferences.DEFAULT_CORNER_ENABLED,
+                )
+            val cornerTriggerRangeDp =
+                ModulePreferences.coerceCornerTriggerRangeDp(
+                    preferences.getInt(
+                        ModulePreferences.KEY_CORNER_TRIGGER_RANGE_DP,
+                        ModulePreferences.DEFAULT_CORNER_TRIGGER_RANGE_DP,
+                    ),
+                )
+            // @author bomo 触发热区：形状默认扇形（即改造前的行为）；横/纵向长度未配置时
+            // 沿用扇形半径值，这样从扇形切到三角形时热区尺度不会突变。
+            val triggerShape =
+                TriggerShape.fromStoredValue(
+                    preferences.getInt(
+                        ModulePreferences.KEY_TRIGGER_SHAPE,
+                        TriggerShape.DEFAULT.storedValue,
+                    ),
+                )
+            fun storedTriggerExtentDp(key: String): Int =
+                ModulePreferences.coerceTriggerExtentDp(
+                    if (preferences.contains(key)) {
+                        preferences.getInt(key, cornerTriggerRangeDp)
+                    } else {
+                        cornerTriggerRangeDp
+                    },
+                )
+            val triggerHorizontalDp =
+                storedTriggerExtentDp(ModulePreferences.KEY_TRIGGER_HORIZONTAL_DP)
+            val triggerVerticalDp =
+                storedTriggerExtentDp(ModulePreferences.KEY_TRIGGER_VERTICAL_DP)
+            val panelScalePercent =
+                ModulePreferences.coercePanelScalePercent(
+                    preferences.getInt(
+                        ModulePreferences.KEY_PANEL_SCALE_PERCENT,
+                        ModulePreferences.DEFAULT_PANEL_SCALE_PERCENT,
+                    ),
+                )
+            val radialScalePercent =
+                ModulePreferences.coerceRadialScalePercent(
+                    preferences.getInt(
+                        ModulePreferences.KEY_RADIAL_SCALE_PERCENT,
+                        ModulePreferences.DEFAULT_RADIAL_SCALE_PERCENT,
+                    ),
+                )
+            val outsideTapCloseMode =
+                OutsideTapCloseMode.fromStoredValue(
+                    preferences.getInt(
+                        ModulePreferences.KEY_OUTSIDE_TAP_CLOSE_MODE,
+                        ModulePreferences.DEFAULT_OUTSIDE_TAP_CLOSE_MODE.storedValue,
+                    ),
+                )
+            val handleSwipeUpToMiniEnabled =
+                preferences.getBoolean(
+                    ModulePreferences.KEY_HANDLE_SWIPE_UP_TO_MINI_ENABLED,
+                    ModulePreferences.DEFAULT_HANDLE_SWIPE_UP_TO_MINI_ENABLED,
+                )
+            val pinsSaved = preferences.contains(ModulePreferences.KEY_CORNER_PINS)
+            val innerPinsSaved = preferences.contains(ModulePreferences.KEY_CORNER_INNER_PINS)
+            val pins =
+                if (pinsSaved) {
+                    decodePinnedComponents(
+                        preferences.getString(ModulePreferences.KEY_CORNER_PINS, "") ?: "",
+                    )
+                } else {
+                    emptyList()
+                }
+            return ModuleSettingsSnapshot(
+                enabled = enabled,
+                innerPinsSaved = innerPinsSaved,
+                innerPinnedComponents =
+                    if (innerPinsSaved) {
+                        decodeComponents(
+                            preferences.getString(ModulePreferences.KEY_CORNER_INNER_PINS, "") ?: "",
+                        )
+                    } else {
+                        emptyList()
+                    },
+                leftCornerEnabled = leftEnabled,
+                rightCornerEnabled = rightEnabled,
+                cornerTriggerRangeDp = cornerTriggerRangeDp,
+                triggerShape = triggerShape,
+                triggerHorizontalDp = triggerHorizontalDp,
+                triggerVerticalDp = triggerVerticalDp,
+                panelScalePercent = panelScalePercent,
+                radialScalePercent = radialScalePercent,
+                pinsSaved = pinsSaved,
+                pinnedComponents = pins,
+                outsideTapCloseMode = outsideTapCloseMode,
+                handleSwipeUpToMiniEnabled = handleSwipeUpToMiniEnabled,
+                pauseInLandscape = preferences.getBoolean(
+                    ModulePreferences.KEY_PAUSE_IN_LANDSCAPE,
+                    ModulePreferences.DEFAULT_PAUSE_IN_LANDSCAPE,
+                ),
+                pauseInGameMode = preferences.getBoolean(
+                    ModulePreferences.KEY_PAUSE_IN_GAME_MODE,
+                    ModulePreferences.DEFAULT_PAUSE_IN_GAME_MODE,
+                ),
+                developerMode = preferences.getBoolean(
+                    ModulePreferences.KEY_DEVELOPER_MODE,
+                    ModulePreferences.DEFAULT_DEVELOPER_MODE,
+                ),
+            )
+        }
+
+        fun encodePinnedComponents(components: List<ComponentName>): String =
+            encodeComponents(components, ModulePreferences.MAX_PINNED_APPS)
+
+        fun encodeComponents(components: List<ComponentName>, limit: Int): String =
+            components
+                .asSequence()
+                .distinct()
+                .take(limit)
+                .joinToString("\n", transform = ComponentName::flattenToString)
+
+        fun decodeComponents(value: String): List<ComponentName> =
+            PinnedComponentCodec
+                .decodeRaw(value, Int.MAX_VALUE)
+                .asSequence()
+                .mapNotNull(ComponentName::unflattenFromString)
+                .toList()
+
+        fun decodePinnedComponents(value: String): List<ComponentName> =
+            PinnedComponentCodec
+                .decodeRaw(value)
+                .asSequence()
+                .mapNotNull(ComponentName::unflattenFromString)
+                .toList()
+    }
+}

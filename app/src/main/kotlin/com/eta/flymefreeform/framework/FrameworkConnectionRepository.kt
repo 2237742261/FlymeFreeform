@@ -1,0 +1,602 @@
+package com.eta.flymefreeform.framework
+
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.SharedPreferences
+import android.util.Log
+import io.github.libxposed.service.XposedService
+import io.github.libxposed.service.XposedServiceHelper
+import com.eta.flymefreeform.config.ConfigSnapshotCodec
+import com.eta.flymefreeform.config.ModulePreferences
+import com.eta.flymefreeform.config.SharedStateProtocol
+import com.eta.flymefreeform.config.ModuleSettingsSnapshot
+import com.eta.flymefreeform.config.OutsideTapCloseMode
+import com.eta.flymefreeform.config.PinnedComponentCodec
+import com.eta.flymefreeform.config.TriggerShape
+import java.util.IdentityHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
+
+/** Service 102 的进程级所有者；所有同步 Binder 调用都串行限制在单一后台线程。 */
+internal class FrameworkConnectionRepository(
+    /** @author bomo 仅用于把配置变更推给 Hook 进程（见 [pushConfigToHooks]）。 */
+    private val context: Context,
+) {
+    private val started = AtomicBoolean(false)
+    private val worker = Executors.newSingleThreadExecutor { task -> Thread(task, WORKER_THREAD_NAME) }
+    private val liveServices = IdentityHashMap<XposedService, Unit>()
+    private val diedBeforeBind = IdentityHashMap<XposedService, Unit>()
+    private val pendingServices = IdentityHashMap<XposedService, Unit>()
+    private val unavailableServices = IdentityHashMap<XposedService, FrameworkConnectionState>()
+    private var activeConnection: ActiveConnection? = null
+
+    /** 连接建立前排队等待落盘的共享状态（单线程 worker 内访问）。 */
+    private val pendingRecent = ArrayDeque<ComponentName>()
+    private var pendingCatalog: String? = null
+
+    private val mutableState = MutableStateFlow(FrameworkConnectionState())
+    val state: StateFlow<FrameworkConnectionState> = mutableState.asStateFlow()
+
+    private val serviceListener =
+        object : XposedServiceHelper.OnServiceListener {
+            override fun onServiceBind(service: XposedService) {
+                worker.execute { handleServiceBind(service) }
+            }
+
+            override fun onServiceDied(service: XposedService) {
+                worker.execute { handleServiceDied(service) }
+            }
+        }
+
+    fun start() {
+        check(started.compareAndSet(false, true)) { "Xposed Service listener is already registered" }
+        XposedServiceHelper.registerListener(serviceListener)
+    }
+
+    fun setModuleEnabled(enabled: Boolean) =
+        updateSettings { it.copy(enabled = enabled) }
+
+    fun setLeftCornerEnabled(enabled: Boolean) =
+        updateSettings { it.copy(leftCornerEnabled = enabled) }
+
+    fun setRightCornerEnabled(enabled: Boolean) =
+        updateSettings { it.copy(rightCornerEnabled = enabled) }
+
+    fun setCornerTriggerRangeDp(rangeDp: Int) =
+        updateSettings {
+            it.copy(
+                cornerTriggerRangeDp =
+                    ModulePreferences.coerceCornerTriggerRangeDp(rangeDp),
+            )
+        }
+
+    /**
+     * @author bomo 设置角落触发热区的形状（扇形 / 三角形）。
+     * 只写配置；热区在三个宿主进程（systemui 角落窗口、launcher 抢占、system_server 指针监听）
+     * 读取设置时生效，改变形状不需要重装模块。
+     */
+    fun setTriggerShape(shape: TriggerShape) =
+        updateSettings { it.copy(triggerShape = shape) }
+
+    /** @author bomo 设置三角形触发热区的横向长度（沿屏幕底边，dp）；扇形不使用。 */
+    fun setTriggerHorizontalDp(horizontalDp: Int) =
+        updateSettings {
+            it.copy(
+                triggerHorizontalDp =
+                    ModulePreferences.coerceTriggerExtentDp(horizontalDp),
+            )
+        }
+
+    /** @author bomo 设置三角形触发热区的纵向高度（沿屏幕侧边，dp）；扇形不使用。 */
+    fun setTriggerVerticalDp(verticalDp: Int) =
+        updateSettings {
+            it.copy(
+                triggerVerticalDp = ModulePreferences.coerceTriggerExtentDp(verticalDp),
+            )
+        }
+
+    /**
+     * @author bomo 设置「全部」面板的整体缩放百分比。
+     * 只写配置；面板在**下次打开**时读取，因此不需要重启或重装。
+     */
+    fun setPanelScalePercent(percent: Int) =
+        updateSettings {
+            it.copy(
+                panelScalePercent = ModulePreferences.coercePanelScalePercent(percent),
+            )
+        }
+
+    /**
+     * @author bomo 设置角落轮盘的整体缩放百分比（100 = 基准）。
+     * system_server 在**每次呼出轮盘时**读这份配置，配置推送通道通了以后改完即生效。
+     */
+    fun setRadialScalePercent(percent: Int) =
+        updateSettings {
+            it.copy(
+                radialScalePercent = ModulePreferences.coerceRadialScalePercent(percent),
+            )
+        }
+
+    fun setOutsideTapCloseMode(mode: OutsideTapCloseMode) =
+        updateSettings { it.copy(outsideTapCloseMode = mode) }
+
+    fun setHandleSwipeUpToMiniEnabled(enabled: Boolean) =
+        updateSettings { it.copy(handleSwipeUpToMiniEnabled = enabled) }
+
+    fun setPauseInLandscape(enabled: Boolean) =
+        updateSettings { it.copy(pauseInLandscape = enabled) }
+
+    fun setPauseInGameMode(enabled: Boolean) =
+        updateSettings { it.copy(pauseInGameMode = enabled) }
+
+    /** @author bomo 开发模式开关（诊断日志总开关，默认关）。改完经配置推送即时生效。 */
+    fun setDeveloperMode(enabled: Boolean) =
+        updateSettings { it.copy(developerMode = enabled) }
+
+    /**
+     * @author bomo 「重启作用域」按钮的完整动作（用户 2026-10-16 定）。
+     *
+     * 顺序即语义：
+     * 1. 先发**硬停**广播（不依赖 LSPosed）。模块在管理器里被停用时没有别的办法让注入停下 ——
+     *    重启 SystemUI / 桌面都不会碰 system_server，而角落轮盘正是 system_server 画的；
+     * 2. 再杀 SystemUI / 桌面 / 侧边栏，让它们按当前模块状态重新注入；
+     * 3. 连接仍在（说明模块仍启用、远端偏好可写）时立刻补推一次配置，撤销第 1 步的硬停
+     *    —— 于是「模块启用时按这个按钮」等于单纯重启作用域；连接不在时硬停保持生效。
+     */
+    suspend fun restartScope(): ScopeRestartOutcome =
+        withContext(worker.asCoroutineDispatcher()) {
+            val connection = activeConnection
+            sendModuleStop()
+            val restarted = ScopeRestarter.restart()
+            if (!restarted) return@withContext ScopeRestartOutcome.Failed
+            if (connection == null || activeConnection?.service !== connection.service) {
+                return@withContext ScopeRestartOutcome.StoppedWithoutConnection
+            }
+            pushConfigToHooks(mutableState.value.settings)
+            ScopeRestartOutcome.Restarted
+        }
+
+    /** 写入内圈固定应用（独立的第二圈，上限 MAX_INNER_APPS）。 */
+    fun setInnerPinnedComponents(components: List<ComponentName>) =
+        updateSettings { settings ->
+            settings.copy(
+                innerPinsSaved = true,
+                innerPinnedComponents =
+                    components.distinct().take(ModulePreferences.MAX_INNER_APPS),
+            )
+        }
+
+    fun setPinnedComponents(components: List<ComponentName>) =        updateSettings {
+            it.copy(
+                pinsSaved = true,
+                pinnedComponents =
+                    components.distinct().take(ModulePreferences.MAX_PINNED_APPS),
+            )
+        }
+
+    fun requestMissingScopes() {
+        worker.execute {
+            val connection = activeConnection ?: return@execute
+            val current = mutableState.value
+            if (!current.canRequestScope) return@execute
+            val requested = current.missingScopes.toList()
+            val requesting = current.copy(isRequestingScope = true, issue = null)
+            activeConnection = connection.copy(confirmedState = requesting)
+            mutableState.value = requesting
+            try {
+                connection.service.requestScope(
+                    requested,
+                    object : XposedService.OnScopeEventListener {
+                        override fun onScopeRequestApproved(approved: List<String>) {
+                            worker.execute { refreshAfterScopeRequest(connection) }
+                        }
+
+                        override fun onScopeRequestFailed(message: String) {
+                            worker.execute { finishScopeRequestWithError(connection) }
+                        }
+                    },
+                )
+            } catch (exception: XposedService.ServiceException) {
+                finishScopeRequestWithError(connection)
+            } catch (exception: UnsupportedOperationException) {
+                finishScopeRequestWithError(connection)
+            } catch (exception: SecurityException) {
+                finishScopeRequestWithError(connection)
+            } catch (exception: RuntimeException) {
+                finishScopeRequestWithError(connection)
+            }
+        }
+    }
+
+    /** 读取侧边栏工具目录（由侧边栏进程广播、App 落盘）；未连接或未发布时返回 null。 */
+    fun readToolCatalog(): String? =
+        activeConnection?.preferences?.let { preferences ->
+            runCatching { preferences.getString(ModulePreferences.KEY_TOOL_CATALOG, null) }.getOrNull()
+        }
+
+    /**
+     * 记录一次「小窗打开」：最近的在最前，去重后截断。
+     *
+     * 由 Hook 侧广播驱动（Hook 进程的远端配置只读，只有 App 能写），
+     * 供「全部」面板的「最近小窗」区块读取。
+     * 广播会唤醒刚启动的 App，此时框架连接尚未建立（[activeConnection] 为 null），
+     * 因此先入队、连上后由 [flushPendingSharedState] 补写。
+     */
+    fun recordRecentFreeform(component: ComponentName) {
+        worker.execute {
+            val preferences = activeConnection?.preferences
+            if (preferences == null) {
+                pendingRecent.remove(component)
+                pendingRecent.addFirst(component)
+                while (pendingRecent.size > ModulePreferences.MAX_RECENT_FREEFORM) pendingRecent.removeLast()
+                Log.i(TAG, "SHARED_STATE_RECENT_DEFERRED ${component.flattenToString()}")
+                return@execute
+            }
+            writeRecent(component, preferences)
+        }
+    }
+
+    /** 写入侧边栏工具目录；未连接时排队，内容未变化时不重复落盘。 */
+    fun writeToolCatalog(catalog: String) {
+        if (catalog.isEmpty()) return
+        worker.execute {
+            val preferences = activeConnection?.preferences
+            if (preferences == null) {
+                pendingCatalog = catalog
+                Log.i(TAG, "SHARED_STATE_CATALOG_DEFERRED")
+                return@execute
+            }
+            writeCatalog(catalog, preferences)
+        }
+    }
+
+    /** 框架连接建立后补写等待中的共享状态；由 [activateService] 触发。 */
+    private fun flushPendingSharedState() {
+        worker.execute {
+            val preferences = activeConnection?.preferences ?: return@execute
+            val catalog = pendingCatalog
+            if (catalog != null) {
+                pendingCatalog = null
+                writeCatalog(catalog, preferences)
+            }
+            val deferred = pendingRecent.toList()
+            pendingRecent.clear()
+            // 队列头部是最新的，倒序补写才能保持"最近的在最前"。
+            deferred.reversed().forEach { component -> writeRecent(component, preferences) }
+            if (catalog != null || deferred.isNotEmpty()) {
+                Log.i(TAG, "SHARED_STATE_FLUSHED recent=${deferred.size} catalog=${catalog != null}")
+            }
+        }
+    }
+
+    private fun writeRecent(component: ComponentName, preferences: SharedPreferences) {
+        val current =
+            PinnedComponentCodec
+                .decodeRaw(
+                    preferences.getString(ModulePreferences.KEY_RECENT_FREEFORM, "") ?: "",
+                    ModulePreferences.MAX_RECENT_FREEFORM,
+                )
+                .mapNotNull(ComponentName::unflattenFromString)
+        val next =
+            (listOf(component) + current.filterNot { it == component })
+                .take(ModulePreferences.MAX_RECENT_FREEFORM)
+        runCatching {
+            preferences
+                .edit()
+                .putString(
+                    ModulePreferences.KEY_RECENT_FREEFORM,
+                    next.joinToString("\n", transform = ComponentName::flattenToString),
+                )
+                .apply()
+        }.onFailure { exception ->
+            Log.w(TAG, "SHARED_STATE_RECENT_WRITE_FAILED", exception)
+        }
+    }
+
+    private fun writeCatalog(catalog: String, preferences: SharedPreferences) {
+        if (preferences.getString(ModulePreferences.KEY_TOOL_CATALOG, null) == catalog) return
+        runCatching {
+            preferences.edit().putString(ModulePreferences.KEY_TOOL_CATALOG, catalog).apply()
+        }.onSuccess {
+            Log.i(TAG, "SHARED_STATE_CATALOG_WRITTEN")
+        }.onFailure { exception ->
+            Log.w(TAG, "SHARED_STATE_CATALOG_WRITE_FAILED", exception)
+        }
+    }
+
+    private fun updateSettings(transform: (ModuleSettingsSnapshot) -> ModuleSettingsSnapshot) {
+        worker.execute {
+            val connection = activeConnection ?: return@execute
+            val previous = mutableState.value
+            if (!previous.canChangeSettings) return@execute
+            val next = transform(previous.settings)
+            if (next == previous.settings) return@execute
+            mutableState.value = previous.copy(isUpdating = true, issue = null)
+            val committed = commitSettings(connection.preferences, next)
+            if (activeConnection?.service !== connection.service) return@execute
+            if (committed) {
+                val confirmed = previous.copy(settings = next, isUpdating = false, issue = null)
+                activeConnection = connection.copy(confirmedState = confirmed)
+                mutableState.value = confirmed
+                // @author bomo 落盘成功后立刻推给 Hook 进程：那边读远端偏好是**进程内缓存**，
+                // 不推这一把，用户改完设置必须重启手机才生效（详见 pushConfigToHooks 注释）。
+                pushConfigToHooks(next)
+            } else {
+                isolateFailedConnection(connection, previous)
+            }
+        }
+    }
+
+    /**
+     * @author bomo 把最新配置推给 Hook 进程（system_server）。
+     *
+     * **必要性**：`RemotePreferences` 在 Hook 进程是只读 + **进程内缓存**，且
+     * `OnSharedPreferenceChangeListener` 不跨进程回调（见 `ProcessConfiguration.refreshNow()` 注释）。
+     * 不推这一把，用户改完设置就得重启手机才生效 —— 曾因此被报「添加扇形应用无效」。
+     *
+     * 失败只记日志：广播只是"让改动尽快生效"，**远端落盘才是唯一真源**，推失败不影响正确性。
+     */
+    private fun pushConfigToHooks(settings: ModuleSettingsSnapshot) {
+        runCatching {
+            val payload = ConfigSnapshotCodec.encode(settings)
+            context.sendBroadcast(
+                Intent(SharedStateProtocol.ACTION_CONFIG_CHANGED)
+                    .putExtra(SharedStateProtocol.EXTRA_CONFIG, payload),
+            )
+            Log.i(TAG, "CONFIG_PUSH_SENT")
+        }.onFailure { exception ->
+            Log.w(TAG, "CONFIG_PUSH_SEND_FAILED", exception)
+        }
+    }
+
+    /**
+     * @author bomo 向所有已注入进程发「硬停」广播（见 [SharedStateProtocol.ACTION_MODULE_STOP]）。
+     *
+     * 这条通道与 LSPosed 无关：模块被停用后远端偏好不可写，但注入还在，
+     * 广播是唯一还能把 system_server 停下来的手段。发送失败只记日志。
+     */
+    private fun sendModuleStop() {
+        runCatching {
+            context.sendBroadcast(Intent(SharedStateProtocol.ACTION_MODULE_STOP))
+            Log.i(TAG, "MODULE_STOP_SENT")
+        }.onFailure { exception ->
+            Log.w(TAG, "MODULE_STOP_SEND_FAILED", exception)
+        }
+    }
+
+    private fun handleServiceBind(service: XposedService) {
+        if (diedBeforeBind.remove(service) != null) return
+        if (liveServices.put(service, Unit) != null) return
+        pendingServices[service] = Unit
+        reconcileServices()
+    }
+
+    private fun handleServiceDied(service: XposedService) {
+        if (liveServices.remove(service) == null) {
+            diedBeforeBind[service] = Unit
+            return
+        }
+        pendingServices.remove(service)
+        unavailableServices.remove(service)
+        if (activeConnection?.service === service) activeConnection = null
+        reconcileServices()
+    }
+
+    private fun reconcileServices() {
+        if (liveServices.size > 1) {
+            mutableState.value = multipleServicesState()
+            return
+        }
+        val service = liveServices.keys.firstOrNull()
+        if (service == null) {
+            activeConnection = null
+            mutableState.value = FrameworkConnectionState()
+            return
+        }
+        activeConnection?.takeIf { it.service === service }?.let { connection ->
+            mutableState.value = connection.confirmedState
+            return
+        }
+        unavailableServices[service]?.let { state ->
+            mutableState.value = state
+            return
+        }
+        if (pendingServices.remove(service) != null) {
+            activateService(service)
+            return
+        }
+        mutableState.value =
+            FrameworkConnectionState(
+                status = FrameworkConnectionStatus.Error,
+                issue = FrameworkConnectionIssue.ConnectionFailed,
+            )
+    }
+
+    private fun activateService(service: XposedService) {
+        val result = probeService(service)
+        if (result.connection != null) {
+            unavailableServices.remove(service)
+            activeConnection = result.connection
+            flushPendingSharedState()
+            // @author bomo 连接建立即把配置推一次：进程可能是在硬停状态下重启的，
+            // 也可能刚被 LSPosed 重新注入 —— 以 App 里的配置为准恢复现场。
+            pushConfigToHooks(result.connection.confirmedState.settings)
+        } else {
+            activeConnection = null
+            unavailableServices[service] = result.state
+        }
+        mutableState.value = result.state
+    }
+
+    private fun probeService(service: XposedService): ProbeResult {
+        var frameworkName: String? = null
+        var frameworkVersion: String? = null
+        var apiVersion: Int? = null
+        return try {
+            apiVersion = service.apiVersion
+            frameworkName = service.frameworkName.normalizedMetadata()
+            frameworkVersion = service.frameworkVersion.normalizedMetadata()
+            val properties = service.frameworkProperties
+            when {
+                apiVersion < XposedService.API_102 ->
+                    ProbeResult.failure(frameworkName, frameworkVersion, apiVersion, FrameworkConnectionIssue.ServiceApiTooOld)
+                properties and XposedService.PROP_CAP_REMOTE == 0L ->
+                    ProbeResult.failure(frameworkName, frameworkVersion, apiVersion, FrameworkConnectionIssue.RemoteCapabilityMissing)
+                properties and XposedService.PROP_CAP_SYSTEM == 0L ->
+                    ProbeResult.failure(frameworkName, frameworkVersion, apiVersion, FrameworkConnectionIssue.SystemCapabilityMissing)
+                else -> {
+                    val preferences = service.getRemotePreferences(ModulePreferences.GROUP)
+                    val settings = readOrRepairSettings(preferences) ?: return ProbeResult.error(
+                        frameworkName,
+                        frameworkVersion,
+                        apiVersion,
+                        FrameworkConnectionIssue.WriteFailed,
+                    )
+                    val scopes = service.scope.filterTo(linkedSetOf()) { it in FrameworkConnectionState.REQUIRED_SCOPES }
+                    ProbeResult.connected(service, preferences, frameworkName, frameworkVersion, apiVersion, settings, scopes)
+                }
+            }
+        } catch (exception: XposedService.ServiceException) {
+            ProbeResult.error(frameworkName, frameworkVersion, apiVersion)
+        } catch (exception: UnsupportedOperationException) {
+            ProbeResult.failure(frameworkName, frameworkVersion, apiVersion, FrameworkConnectionIssue.RemoteCapabilityMissing)
+        } catch (exception: SecurityException) {
+            ProbeResult.error(frameworkName, frameworkVersion, apiVersion)
+        } catch (exception: RuntimeException) {
+            ProbeResult.error(frameworkName, frameworkVersion, apiVersion)
+        }
+    }
+
+    private fun readOrRepairSettings(preferences: SharedPreferences): ModuleSettingsSnapshot? =
+        try {
+            ModuleSettingsSnapshot.readFrom(preferences)
+        } catch (exception: ClassCastException) {
+            ModuleSettingsSnapshot().takeIf { defaults -> commitSettings(preferences, defaults) }
+        }
+
+    private fun commitSettings(preferences: SharedPreferences, settings: ModuleSettingsSnapshot): Boolean =
+        try {
+            settings.writeTo(preferences.edit()).commit()
+        } catch (exception: XposedService.ServiceException) {
+            false
+        } catch (exception: UnsupportedOperationException) {
+            false
+        } catch (exception: SecurityException) {
+            false
+        } catch (exception: RuntimeException) {
+            false
+        }
+
+    private fun isolateFailedConnection(connection: ActiveConnection, previous: FrameworkConnectionState) {
+        activeConnection = null
+        val failed =
+            previous.copy(
+                status = FrameworkConnectionStatus.Error,
+                isUpdating = false,
+                isRequestingScope = false,
+                issue = FrameworkConnectionIssue.WriteFailed,
+            )
+        unavailableServices[connection.service] = failed
+        mutableState.value = failed
+    }
+
+    private fun refreshAfterScopeRequest(connection: ActiveConnection) {
+        if (activeConnection?.service !== connection.service) return
+        pendingServices[connection.service] = Unit
+        activeConnection = null
+        reconcileServices()
+    }
+
+    private fun finishScopeRequestWithError(connection: ActiveConnection) {
+        if (activeConnection?.service !== connection.service) return
+        val failed =
+            connection.confirmedState.copy(
+                isRequestingScope = false,
+                issue = FrameworkConnectionIssue.ScopeRequestFailed,
+            )
+        activeConnection = connection.copy(confirmedState = failed)
+        mutableState.value = if (liveServices.size > 1) multipleServicesState() else failed
+    }
+
+    private fun multipleServicesState() =
+        FrameworkConnectionState(
+            status = FrameworkConnectionStatus.Incompatible,
+            issue = FrameworkConnectionIssue.MultipleServices,
+        )
+
+    private fun String.normalizedMetadata(): String? = trim().take(MAX_METADATA_LENGTH).ifEmpty { null }
+
+    private data class ActiveConnection(
+        val service: XposedService,
+        val preferences: SharedPreferences,
+        val confirmedState: FrameworkConnectionState,
+    )
+
+    private data class ProbeResult(val connection: ActiveConnection?, val state: FrameworkConnectionState) {
+        companion object {
+            fun connected(
+                service: XposedService,
+                preferences: SharedPreferences,
+                frameworkName: String?,
+                frameworkVersion: String?,
+                apiVersion: Int,
+                settings: ModuleSettingsSnapshot,
+                scopes: Set<String>,
+            ): ProbeResult {
+                val state =
+                    FrameworkConnectionState(
+                        status = FrameworkConnectionStatus.Connected,
+                        frameworkName = frameworkName,
+                        frameworkVersion = frameworkVersion,
+                        apiVersion = apiVersion,
+                        settings = settings,
+                        grantedScopes = scopes,
+                    )
+                return ProbeResult(ActiveConnection(service, preferences, state), state)
+            }
+
+            fun failure(name: String?, version: String?, api: Int?, issue: FrameworkConnectionIssue) =
+                ProbeResult(
+                    null,
+                    FrameworkConnectionState(
+                        status = FrameworkConnectionStatus.Incompatible,
+                        frameworkName = name,
+                        frameworkVersion = version,
+                        apiVersion = api,
+                        issue = issue,
+                    ),
+                )
+
+            fun error(
+                name: String?,
+                version: String?,
+                api: Int?,
+                issue: FrameworkConnectionIssue = FrameworkConnectionIssue.ConnectionFailed,
+            ) =
+                ProbeResult(
+                    null,
+                    FrameworkConnectionState(
+                        status = FrameworkConnectionStatus.Error,
+                        frameworkName = name,
+                        frameworkVersion = version,
+                        apiVersion = api,
+                        issue = issue,
+                    ),
+                )
+        }
+    }
+
+    private companion object {
+        const val WORKER_THREAD_NAME = "FlymeFreeform-Service"
+        const val MAX_METADATA_LENGTH = 80
+
+        /** 共享状态写入失败的日志标签。 */
+        const val TAG = "FlymeFreeform"
+    }
+}
