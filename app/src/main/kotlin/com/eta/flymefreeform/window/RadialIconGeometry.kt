@@ -50,6 +50,15 @@ internal object RadialIconGeometry {
     internal const val BASE_ITEM_PADDING_DP = 1.5f
 
     /**
+     * @author bomo 图标放大的**百分比上限**（2026-10-17 用户要求）。
+     *
+     * 滑条超过这个百分比后，只有半径继续变大，图标停在 105% 时的大小：
+     * 47.5 × 1.05 = 49.875dp ≈ 135px（本机 1 基准 dp = 2.7px）。
+     * 用户原话「缩小没问题，但放得太大就不好看」—— 所以放大侧封顶，缩小侧不封。
+     */
+    internal const val ICON_SCALE_CAP_PERCENT = 105f
+
+    /**
      * 与 RadialGeometry.SPAN_DEGREES 一致；槽位角 = SPAN / 条目数。
      *
      * @author bomo 84 → 86：配合半径 324dp，弦长刚好容下满尺寸图标。
@@ -87,6 +96,20 @@ internal object RadialIconGeometry {
      */
     private const val MIN_FIT_SCALE = 0.6f
 
+    /**
+     * @author bomo 设置页预览用的**外缘半径**（基准 dp）：图标圆心半径 + 图标半径 + 留白。
+     *
+     * 与 [fit] 同源（半径按滑条缩放、图标按 [ICON_SCALE_CAP_PERCENT] 封顶）。
+     * 设置页必须调这个函数，**不要自己抄公式** —— 两边漂移预览就不准了。
+     */
+    internal fun previewOuterEdgeDp(scalePercent: Int): Float {
+        val scale = ModulePreferences.coerceRadialScalePercent(scalePercent) / 100f
+        val iconScale = minOf(scale, ICON_SCALE_CAP_PERCENT / 100f)
+        return BASE_RADIUS_DP * scale +
+            BASE_ICON_DIAMETER_DP * iconScale / 2f +
+            BASE_ITEM_PADDING_DP
+    }
+
     fun fit(
         width: Float,
         height: Float,
@@ -100,10 +123,13 @@ internal object RadialIconGeometry {
         require(width.isFinite() && width > 0f && height.isFinite() && height > 0f)
         require(density.isFinite() && density > 0f)
         require(itemCount >= 1)
-        // 半径与图标同比例缩放：整圈大小可变，观感（间隙/选中圈比例）不变。
-        val baseRadiusDp =
-            BASE_RADIUS_DP * ModulePreferences.coerceRadialScalePercent(scalePercent) / 100f
-        val baseIconDiameterDp = BASE_ICON_DIAMETER_DP * baseRadiusDp / BASE_RADIUS_DP
+        // 半径按滑条缩放；**图标只放大到 [ICON_SCALE_CAP_PERCENT] 就封顶**，
+        // 超过之后滑条只扩大半径与整体范围，图标保持 105% 的大小（2026-10-17 用户要求）。
+        val scale =
+            ModulePreferences.coerceRadialScalePercent(scalePercent) / 100f
+        val baseRadiusDp = BASE_RADIUS_DP * scale
+        val iconScale = minOf(scale, ICON_SCALE_CAP_PERCENT / 100f)
+        val baseIconDiameterDp = BASE_ICON_DIAMETER_DP * iconScale
         val safeWidth = (width - safeInsets.left - safeInsets.right).coerceAtLeast(0f)
         val safeHeight = (height - safeInsets.top - safeInsets.bottom).coerceAtLeast(0f)
         val windowScale = (minOf(width, height) / density) / BASE_SHORT_EDGE_DP

@@ -803,8 +803,9 @@ private fun CornerRangePreview(
  * 同一个四分之一圆、同样的实心扇形 + 虚线描边、同样的启用/未启用配色，
  * 只是半径换成**轮盘外缘**（= 图标圆心半径 + 图标半径 + 留白），也就是「呼出来后这一圈占多大」。
  *
- * 换算与 system_server 侧**同源**（常量取自 [RadialIconGeometry]，不另抄一份）：
- * `每基准 dp = 窗口短边 / 400`，所以 100% 时外缘 ≈ 675 + 64 + 4 = 743px（本机短边 1080）。
+ * 换算与 system_server 侧**同源**（口径取自 `RadialIconGeometry.previewOuterEdgeDp`，不另抄一份）：
+ * `每基准 dp = 窗口短边 / 400`，100% 时外缘 ≈ 675 + 64 + 4 = 743px；
+ * 105% 时 ≈ 709 + 67 + 4 = 780px；再往上**半径继续长、图标封顶**（本机短边 1080）。
  * 只作示意，不参与任何手势判定。
  */
 @Composable
@@ -816,14 +817,8 @@ private fun RadialScalePreview(
     val activeColor = MiuixTheme.colorScheme.primary
     val inactiveColor = MiuixTheme.colorScheme.onSurfaceVariantSummary
     Canvas(modifier = Modifier.fillMaxSize()) {
-        val scale = percent / 100f
         val unit = minOf(size.width, size.height) / RadialIconGeometry.BASE_SHORT_EDGE_DP
-        val outerEdge =
-            (
-                RadialIconGeometry.BASE_RADIUS_DP * scale +
-                    RadialIconGeometry.BASE_ICON_DIAMETER_DP * scale / 2f +
-                    RadialIconGeometry.BASE_ITEM_PADDING_DP
-            ) * unit
+        val outerEdge = RadialIconGeometry.previewOuterEdgeDp(percent) * unit
         val bottom = size.height
         val arcSize = Size(outerEdge * 2f, outerEdge * 2f)
         val strokeWidth = 2.dp.toPx()
