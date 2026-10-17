@@ -81,6 +81,7 @@
 ## 致谢
 
 - [Mangi-11/FlymeFreeform](https://github.com/Mangi-11/FlymeFreeform)：本项目所基于的原项目。感谢原作者的开源与设计。
+- [Sillybomo/FlymeFreeform](https://github.com/Sillybomo/FlymeFreeform)：本项目所基于的原项目。感谢原作者的开源与设计。
 - [Flyme](https://www.flyme.com/)：感谢其小窗细腻的设计与交互巧思。
 - [libxposed API](https://github.com/libxposed/api)：现代 Xposed API。
 - [Miuix](https://github.com/compose-miuix-ui/miuix)：UI 组件库。
