@@ -552,6 +552,12 @@ internal class ColorOsFreeformCoordinator(
                 Context.RECEIVER_EXPORTED,
             )
             logger(Log.INFO, "COORDINATOR_READY_RESPONDER_INSTALLED", null)
+            // @author bomo 另外**不等询问先喊一声**：SystemUI 可能比本协调器先起来，
+            // 它的探针会在本接收器注册之前就发完；这一条主动报到了，双向都能兜住。
+            context.sendBroadcast(
+                Intent(SharedStateProtocol.ACTION_COORDINATOR_READY)
+                    .setPackage(SYSTEM_UI_PACKAGE),
+            )
         } catch (exception: RuntimeException) {
             logger(Log.WARN, "COORDINATOR_READY_RESPONDER_FAILED", exception)
         }
