@@ -1,5 +1,6 @@
 package com.eta.flymefreeform.ui
 
+import android.widget.Toast
 import androidx.annotation.StringRes
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
@@ -53,6 +54,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -362,21 +364,25 @@ private fun ScopeRestartPreference(onRestartScope: suspend () -> ScopeRestartOut
     val scope = rememberCoroutineScope()
     var restarting by remember { mutableStateOf(false) }
     var outcome by remember { mutableStateOf<ScopeRestartOutcome?>(null) }
+    val context = LocalContext.current
+    // @author bomo 结果走 Toast、**不写进 summary**（2026-10-17 用户报「重启前后下方说明字数不一样，界面会跳一下」）。
+    // 旧实现把「已重启；模块仍启用（配置已补推）」替换掉那段两行说明，行数 2 → 1，整张卡片高度抖动。
+    // 现在标题下的说明恒为同一段文字，结果用一次性 Toast 反馈，卡片高度永远不变。
+    LaunchedEffect(outcome) {
+        val current = outcome ?: return@LaunchedEffect
+        val message =
+            when (current) {
+                ScopeRestartOutcome.Restarted -> R.string.scope_restart_done
+                ScopeRestartOutcome.StoppedWithoutConnection -> R.string.scope_restart_stopped
+                ScopeRestartOutcome.Failed -> R.string.scope_restart_failed
+            }
+        Toast.makeText(context, context.getString(message), Toast.LENGTH_SHORT).show()
+    }
     // @author bomo 用 BasicComponent 而不是 ArrowPreference：这里是动作按钮，
     // 右侧的「>」会让人以为点进去还有下一页，所以去掉箭头。
     BasicComponent(
         title = stringResource(R.string.scope_restart_title),
-        summary =
-            when {
-                restarting -> stringResource(R.string.scope_restart_running)
-                outcome == ScopeRestartOutcome.Restarted ->
-                    stringResource(R.string.scope_restart_done)
-                outcome == ScopeRestartOutcome.StoppedWithoutConnection ->
-                    stringResource(R.string.scope_restart_stopped)
-                outcome == ScopeRestartOutcome.Failed ->
-                    stringResource(R.string.scope_restart_failed)
-                else -> stringResource(R.string.scope_restart_summary)
-            },
+        summary = stringResource(R.string.scope_restart_summary),
         onClick = {
             if (!restarting) {
                 restarting = true

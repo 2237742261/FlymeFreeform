@@ -51,6 +51,23 @@ internal object SharedStateProtocol {
      */
     const val ACTION_MODULE_STOP = "com.eta.flymefreeform.action.MODULE_STOP"
 
+    /**
+     * @author bomo SystemUI → system_server 的**握手探针**（2026-10-17 新增）。
+     *
+     * 存在的意义：角落热区在 SystemUI（[SystemUiCornerInputMonitor]），而轮盘本体在
+     * system_server（`ColorOsFreeformCoordinator`，挂在 `FlexibleTaskController.systemReady`）。
+     * 模块刚在 LSPosed 里启用、又没重启手机时，SystemUI 重启一次就能拿到热区，
+     * 但 system_server 里的注入**只能在开机时加载** —— 于是热区会抢走角落触摸（拦住返回手势）
+     * 却什么也呼不出来，用户看到的正是「扇区被屏蔽、轮盘不出」。
+     *
+     * 现在 SystemUI 启动后先发这条探针，只有收到 [ACTION_COORDINATOR_READY] 才允许抢占触摸：
+     * 没收到 = system_server 侧没有本模块，热区不抢手势，返回手势照常。
+     */
+    const val ACTION_COORDINATOR_QUERY = "com.eta.flymefreeform.action.COORDINATOR_QUERY"
+
+    /** system_server 侧轮盘协调器就绪的回执；只有它到了 SystemUI 才敢抢触摸。 */
+    const val ACTION_COORDINATOR_READY = "com.eta.flymefreeform.action.COORDINATOR_READY"
+
     /** 侧边栏包名；用于校验目录广播的来源。 */
     const val SIDEBAR_PACKAGE = "com.coloros.smartsidebar"
 

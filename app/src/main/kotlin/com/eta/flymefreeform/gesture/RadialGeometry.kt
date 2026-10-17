@@ -33,9 +33,12 @@ internal object RadialGeometry {
         val step = SPAN_DEGREES / itemCount
         val centers =
             List(itemCount) { index ->
-                // 列表末项是“更多”：它占最靠近角落的 0 号槽；应用从 1 号槽开始
-                // 向上展开，避免任何应用的圆心落在屏幕边缘而被裁掉一半。
-                val slot = if (index == itemCount - 1) 0 else index + 1
+                // 列表末项是「更多」：固定占最靠近角落的 0 号槽（用户明确要求它钉在下方，
+                // 2026-10-17）。应用按**列表顺序自上而下**排：index 0 在最上面的槽，
+                // 最后一个应用紧贴「更多」上方。
+                // ⚠️ 2026-10-17 之前是反的（index 0 在最靠近角落的 1 号槽），
+                // 于是轮盘从下往上是列表正序、从上往下看是倒序，与设置页列表顺序相反。
+                val slot = if (index == itemCount - 1) 0 else itemCount - 1 - index
                 val angle =
                     if (side == CornerSide.Left) {
                         -SAFE_DEGREES - (slot + 0.5f) * step
@@ -71,11 +74,14 @@ internal object RadialGeometry {
         val step = SPAN_DEGREES / itemCount
         val centers =
             List(itemCount) { index ->
+                // @author bomo 内圈同样**自上而下**排（2026-10-17 用户要求内外圈一起改）：
+                // index 0 落在最上面的槽，与外圈方向一致。
+                val slot = itemCount - 1 - index
                 val angle =
                     if (side == CornerSide.Left) {
-                        -SAFE_DEGREES - (index + 0.5f) * step
+                        -SAFE_DEGREES - (slot + 0.5f) * step
                     } else {
-                        -180f + SAFE_DEGREES + (index + 0.5f) * step
+                        -180f + SAFE_DEGREES + (slot + 0.5f) * step
                     }
                 val radians = angle * PI.toFloat() / 180f
                 GesturePoint(

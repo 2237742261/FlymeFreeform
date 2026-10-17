@@ -138,6 +138,7 @@ internal class ColorOsFreeformCoordinator(
             recentFreeformEntries.addAll(configuration.readRecentFreeform())
             registerToolRequestReceiver()
             registerConfigPushReceiver()
+            registerCoordinatorProbeResponder()
             // 开机主动拉目录：Settings 副本不再依赖"用户先开一次面板"。
             sidebar.requestToolCatalog()
             environmentState.start(context)
@@ -521,6 +522,39 @@ internal class ColorOsFreeformCoordinator(
         // @author bomo 必须导出：发送方是模块 App（另一个 UID），
         // 非导出接收器收不到跨 UID 广播（旧实现因此从来没生效过，日志里 CONFIG_PUSH_* 恒为 0）。
         ConfigPushReceiver.register(context, configuration, logger)
+    }
+
+    /**
+     * @author bomo 回答 SystemUI 的「轮盘协调器在不在」探针（2026-10-17）。
+     *
+     * 环节：SystemUI 的角落热区必须先确认轮盘本体（本类）已在 system_server 里活着，
+     * 才允许抢占角落触摸；否则会出现「热区吃掉返回手势但轮盘不出现」。
+     * 回执不加签名权限：载荷只是一个「在」的信号，伪造它最多让热区复用一次本模块手势，
+     * 不涉及配置与特权。
+     */
+    private fun registerCoordinatorProbeResponder() {
+        try {
+            context.registerReceiver(
+                object : BroadcastReceiver() {
+                    override fun onReceive(receiverContext: Context?, intent: Intent?) {
+                        logger(Log.DEBUG, "COORDINATOR_READY_QUERY_RECEIVED", null)
+                        try {
+                            context.sendBroadcast(
+                                Intent(SharedStateProtocol.ACTION_COORDINATOR_READY)
+                                    .setPackage(SYSTEM_UI_PACKAGE),
+                            )
+                        } catch (exception: RuntimeException) {
+                            logger(Log.WARN, "COORDINATOR_READY_REPLY_FAILED", exception)
+                        }
+                    }
+                },
+                IntentFilter(SharedStateProtocol.ACTION_COORDINATOR_QUERY),
+                Context.RECEIVER_EXPORTED,
+            )
+            logger(Log.INFO, "COORDINATOR_READY_RESPONDER_INSTALLED", null)
+        } catch (exception: RuntimeException) {
+            logger(Log.WARN, "COORDINATOR_READY_RESPONDER_FAILED", exception)
+        }
     }
 
     /**
@@ -947,6 +981,9 @@ internal class ColorOsFreeformCoordinator(
         val EMPTY_ICON = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
 
         const val CATALOG_THREAD_NAME = "FlymeFreeform-Catalog"
+
+        /** @author bomo SystemUI 包名：握手回执只定向发它，避免广播扩散。 */
+        const val SYSTEM_UI_PACKAGE = "com.android.systemui"
 
         /** 设置侧目录副本的图标边长（px）。 */
         const val TOOL_ICON_PX = 72

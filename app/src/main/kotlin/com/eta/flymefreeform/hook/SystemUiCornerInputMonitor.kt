@@ -1,7 +1,10 @@
 package com.eta.flymefreeform.hook
 
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.PixelFormat
 import android.hardware.input.InputManager
 import android.os.Handler
@@ -25,6 +28,7 @@ import com.eta.flymefreeform.gesture.CornerTriggerRegion
 import com.eta.flymefreeform.gesture.GestureAction
 import com.eta.flymefreeform.gesture.GesturePhase
 import com.eta.flymefreeform.gesture.TriggerHitZone
+import com.eta.flymefreeform.config.SharedStateProtocol
 import com.eta.flymefreeform.hook.ConfigPushReceiver
 import java.lang.reflect.Field
 import java.lang.reflect.Method
@@ -67,6 +71,14 @@ internal class SystemUiCornerInputMonitor(
     private var settings = ModuleSettingsSnapshot(enabled = false)
     private var pendingSettings: ModuleSettingsSnapshot? = null
     private var lastPilferFailureAt = -PILFER_FAILURE_LOG_INTERVAL_MS
+    private var handshakeAttempts = 0
+
+    /**
+     * @author bomo 只有收到 system_server 轮盘协调器的就绪回执才允许抢占角落触摸。
+     * 开机阶段两者谁先启动不确定，所以初始为 false 并靠重发探针补齐。
+     */
+    @Volatile
+    private var coordinatorReady = false
 
     fun start() {
         environmentState.start(context)
@@ -75,6 +87,7 @@ internal class SystemUiCornerInputMonitor(
         ConfigPushReceiver.register(context, configuration) { priority, code, throwable ->
             module.logFiltered(priority, TAG, code, throwable)
         }
+        registerCoordinatorHandshake()
         environmentState.observe { applySettings(configuration.snapshot) }
         configuration.observe { snapshot ->
             if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -85,8 +98,64 @@ internal class SystemUiCornerInputMonitor(
         }
     }
 
-    private fun acceptSettings(snapshot: ModuleSettingsSnapshot) {
-        ensureMainThread()
+    /**
+     * @author bomo 与 system_server 轮盘协调器握手（2026-10-17 用户报「首次启用不重启手机就吞手势」）。
+     *
+     * 背景：热区窗口在 SystemUI，轮盘本体在 system_server（`ColorOsFreeformCoordinator`）。
+     * 模块在 LSPosed 里刚启用时，重启 SystemUI 就能挂上热区，但 system_server 的注入
+     * **只能开机时加载** → 热区抢走角落触摸（拦住返回手势）却什么也呼不出来。
+     *
+     * 所以这里先发起探针，收到 [SharedStateProtocol.ACTION_COORDINATOR_READY] 才允许抢占；
+     * 没收到就一直不抢，返回手势照常工作，只是轮盘在重启手机前出不来。
+     * 期间每隔 [COORDINATOR_HANDSHAKE_INTERVAL_MS] 重发一次，最多 [COORDINATOR_HANDSHAKE_ATTEMPTS] 次。
+     */
+    private fun registerCoordinatorHandshake() {
+        try {
+            context.registerReceiver(
+                object : BroadcastReceiver() {
+                    override fun onReceive(receiverContext: Context?, intent: Intent?) {
+                        if (coordinatorReady) return
+                        coordinatorReady = true
+                        mainHandler.removeCallbacks(handshakeRetry)
+                        module.logFiltered(Log.INFO, TAG, "SYSTEMUI_COORDINATOR_READY_RECEIVED", null)
+                        // 窗口本来就在（只是不许抢），重算一次让它立刻可抢。
+                        applySettings(settings)
+                    }
+                },
+                IntentFilter(SharedStateProtocol.ACTION_COORDINATOR_READY),
+                Context.RECEIVER_EXPORTED,
+            )
+        } catch (exception: RuntimeException) {
+            module.logFiltered(Log.WARN, TAG, "SYSTEMUI_COORDINATOR_HANDSHAKE_FAILED", exception)
+        }
+        mainHandler.post(handshakeRetry)
+    }
+
+    private val handshakeRetry: Runnable =
+        object : Runnable {
+            override fun run() {
+                if (coordinatorReady) return
+                if (handshakeAttempts >= COORDINATOR_HANDSHAKE_ATTEMPTS) {
+                    module.logFiltered(
+                        Log.WARN,
+                        TAG,
+                        "SYSTEMUI_COORDINATOR_ABSENT 热区不抢占触摸（system_server 未注入，重启手机才生效）",
+                        null,
+                    )
+                    return
+                }
+                handshakeAttempts++
+                try {
+                    context.sendBroadcast(Intent(SharedStateProtocol.ACTION_COORDINATOR_QUERY))
+                } catch (exception: RuntimeException) {
+                    module.logFiltered(Log.WARN, TAG, "SYSTEMUI_COORDINATOR_QUERY_FAILED", exception)
+                    return
+                }
+                mainHandler.postDelayed(this, COORDINATOR_HANDSHAKE_INTERVAL_MS)
+            }
+        }
+
+    private fun acceptSettings(snapshot: ModuleSettingsSnapshot) {        ensureMainThread()
         if (environmentState.isGestureAllowed() && bindings.values.any { it.view.streamActive }) {
             pendingSettings = snapshot
             return
@@ -169,6 +238,7 @@ internal class SystemUiCornerInputMonitor(
 
     private fun canClaim(side: CornerSide): Boolean =
         settings.enabled &&
+            coordinatorReady &&
             when (side) {
                 CornerSide.Left -> settings.leftCornerEnabled
                 CornerSide.Right -> settings.rightCornerEnabled
@@ -372,5 +442,9 @@ internal class SystemUiCornerInputMonitor(
         const val CORNER_GESTURE_WINDOW_TYPE = 2024
         const val CORNER_INPUT_CHANNEL_TITLE = "FlymeFreeform-corner-input"
         const val PILFER_FAILURE_LOG_INTERVAL_MS = 10_000L
+
+        /** 握手探针重发间隔（约 60 秒内覆盖开机阶段两种启动顺序）。 */
+        const val COORDINATOR_HANDSHAKE_INTERVAL_MS = 1_500L
+        const val COORDINATOR_HANDSHAKE_ATTEMPTS = 40
     }
 }
