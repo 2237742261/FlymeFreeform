@@ -67,7 +67,8 @@ internal object ModulePreferences {
      * 轮盘尺寸是唯一需要反复试的参数，做成运行时可调可把「改代码→出包→装机→重启」整条链路省掉。
      */
     const val KEY_RADIAL_SCALE_PERCENT = "radial_scale_percent_v1"
-    const val DEFAULT_RADIAL_SCALE_PERCENT = 100
+    /** @author bomo 默认 105%（2026-10-17 用户定：图标在 105% 封顶，此值即「满尺寸」）。 */
+    const val DEFAULT_RADIAL_SCALE_PERCENT = 105
     const val MIN_RADIAL_SCALE_PERCENT = 70
     const val MAX_RADIAL_SCALE_PERCENT = 115
 

@@ -33,7 +33,6 @@ import androidx.compose.material.icons.rounded.SportsEsports
 import androidx.compose.material.icons.rounded.Straighten
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.SwapVert
-import androidx.compose.material.icons.rounded.SwipeLeft
 import androidx.compose.material.icons.rounded.SwipeRight
 import androidx.compose.material.icons.rounded.SwipeUp
 import androidx.compose.material.icons.rounded.TouchApp
@@ -59,6 +58,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.eta.flymefreeform.R
+import com.eta.flymefreeform.config.CornerCallMode
 import com.eta.flymefreeform.config.ModulePreferences
 import com.eta.flymefreeform.framework.ScopeRestartOutcome
 import kotlinx.coroutines.launch
@@ -94,8 +94,8 @@ import kotlin.math.roundToInt
 internal fun ControlScreen(
     state: FrameworkConnectionState,
     onModuleEnabledChange: (Boolean) -> Unit,
-    onLeftCornerEnabledChange: (Boolean) -> Unit,
-    onRightCornerEnabledChange: (Boolean) -> Unit,
+    /** @author bomo 轮盘呼出方式（常规 / 仅左下 / 仅右下）变更。 */
+    onCornerCallModeChange: (CornerCallMode) -> Unit,
     onCornerTriggerRangeChange: (Int) -> Unit,
     /** @author bomo 触发热区形状（扇形 / 三角形）变更。 */
     onTriggerShapeChange: (TriggerShape) -> Unit,
@@ -186,8 +186,7 @@ internal fun ControlScreen(
                         SettingsCard(
                             state,
                             onModuleEnabledChange,
-                            onLeftCornerEnabledChange,
-                            onRightCornerEnabledChange,
+                            onCornerCallModeChange,
                             onCornerTriggerRangeChange,
                             onTriggerShapeChange = onTriggerShapeChange,
                             onTriggerHorizontalDpChange = onTriggerHorizontalDpChange,
@@ -402,8 +401,8 @@ private fun ScopeRestartPreference(onRestartScope: suspend () -> ScopeRestartOut
 private fun SettingsCard(
     state: FrameworkConnectionState,
     onModuleEnabledChange: (Boolean) -> Unit,
-    onLeftCornerEnabledChange: (Boolean) -> Unit,
-    onRightCornerEnabledChange: (Boolean) -> Unit,
+    /** @author bomo 轮盘呼出方式（常规 / 仅左下 / 仅右下）变更。 */
+    onCornerCallModeChange: (CornerCallMode) -> Unit,
     onCornerTriggerRangeChange: (Int) -> Unit,
     /** @author bomo 触发热区形状变更。 */
     onTriggerShapeChange: (TriggerShape) -> Unit,
@@ -445,21 +444,15 @@ private fun SettingsCard(
                 PreferenceIcon(Icons.Rounded.PowerSettingsNew, state.canChangeSettings)
             },
         )
-        SwitchPreference(
-            checked = state.settings.leftCornerEnabled,
-            onCheckedChange = onLeftCornerEnabledChange,
-            title = stringResource(R.string.left_corner_title),
-            summary = stringResource(R.string.left_corner_summary),
+        // @author bomo 2026-10-17 用户要求：「左下角手势」与「右下角手势」合并成一个下拉选择。
+        CornerCallModePreference(
+            mode =
+                CornerCallMode.resolve(
+                    leftEnabled = state.settings.leftCornerEnabled,
+                    rightEnabled = state.settings.rightCornerEnabled,
+                ),
             enabled = state.canChangeSettings,
-            startAction = { PreferenceIcon(Icons.Rounded.SwipeRight, state.canChangeSettings) },
-        )
-        SwitchPreference(
-            checked = state.settings.rightCornerEnabled,
-            onCheckedChange = onRightCornerEnabledChange,
-            title = stringResource(R.string.right_corner_title),
-            summary = stringResource(R.string.right_corner_summary),
-            enabled = state.canChangeSettings,
-            startAction = { PreferenceIcon(Icons.Rounded.SwipeLeft, state.canChangeSettings) },
+            onModeChange = onCornerCallModeChange,
         )
         TriggerShapePreference(
             shape = state.settings.triggerShape,
@@ -575,6 +568,36 @@ private fun SettingsCard(
             startAction = { PreferenceIcon(Icons.Rounded.Apps, state.canChangeSettings) },
         )
     }
+}
+
+/**
+ * @author bomo 轮盘呼出方式选择器（2026-10-17 用户要求）：
+ * 把原来的两个开关合并成一个下拉，**样式与「触发热区形状」一致**
+ * （`OverlaySpinnerPreference` + 右侧箭头）。选项顺序即 [CornerCallMode.entries]：
+ * 常规（默认）/ 左下角呼出 / 右下角呼出。
+ */
+@Composable
+private fun CornerCallModePreference(
+    mode: CornerCallMode,
+    enabled: Boolean,
+    onModeChange: (CornerCallMode) -> Unit,
+) {
+    val modes = CornerCallMode.entries
+    val items =
+        listOf(
+            DropdownItem(text = stringResource(R.string.corner_call_mode_both)),
+            DropdownItem(text = stringResource(R.string.corner_call_mode_left)),
+            DropdownItem(text = stringResource(R.string.corner_call_mode_right)),
+        )
+    OverlaySpinnerPreference(
+        items = items,
+        selectedIndex = modes.indexOf(mode).coerceAtLeast(0),
+        title = stringResource(R.string.corner_call_mode_title),
+        summary = stringResource(R.string.corner_call_mode_summary),
+        enabled = enabled,
+        startAction = { PreferenceIcon(Icons.Rounded.SwipeRight, enabled) },
+        onSelectedIndexChange = { index -> modes.getOrNull(index)?.let(onModeChange) },
+    )
 }
 
 /**

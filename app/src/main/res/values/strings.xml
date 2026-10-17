@@ -27,10 +27,12 @@
     <string name="module_enabled_summary_waiting">连接框架后才能更改</string>
     <string name="module_enabled_summary_updating">正在写入框架配置</string>
     <string name="module_enabled_summary_scope">补全所需作用域后才能更改</string>
-    <string name="left_corner_title">左下角手势</string>
-    <string name="left_corner_summary">从左下角斜向内上滑呼出扇形菜单</string>
-    <string name="right_corner_title">右下角手势</string>
-    <string name="right_corner_summary">从右下角斜向内上滑呼出扇形菜单</string>
+    <!-- @author bomo 2026-10-17 用户要求：左下角手势、右下角手势合并为「轮盘呼出方式」下拉选择（默认常规） -->
+    <string name="corner_call_mode_title">轮盘呼出方式</string>
+    <string name="corner_call_mode_summary">从哪个角落斜向内上滑呼出扇形菜单；常规 = 两个角落都能呼出</string>
+    <string name="corner_call_mode_both">常规</string>
+    <string name="corner_call_mode_left">左下角呼出</string>
+    <string name="corner_call_mode_right">右下角呼出</string>
     <string name="corner_trigger_range_title">角落触发范围</string>
     <string name="corner_trigger_range_summary">扇形展开半径；范围内手势由扇形菜单接管</string>
     <string name="trigger_shape_title">触发热区形状</string>
@@ -88,7 +90,7 @@
     <string name="developer_mode_title">开发模式</string>
     <string name="developer_mode_summary">打开后输出详细诊断日志（轮盘与面板几何、图标度量、每次手势与工具调用），仅供排障使用</string>
     <string name="scope_restart_title">重启作用域进程</string>
-    <string name="scope_restart_summary">先向已注入的进程发停用信号，再重启 SystemUI、桌面与侧边栏。首次使用请在 Root 授权弹窗里允许；模块首次启用仍需重启手机一次（system_server 里的注入只能开机加载）。</string>
+    <string name="scope_restart_summary">首次使用请在 Root 授权弹窗里允许，模块首次启用仍需重启手机一次</string>
     <string name="scope_restart_done">已重启；模块仍启用（配置已补推）</string>
     <string name="scope_restart_stopped">已停用已注入的进程（未连接框架，按停用处理）</string>
     <string name="scope_restart_failed">重启失败：请确认已授予 Root 权限</string>

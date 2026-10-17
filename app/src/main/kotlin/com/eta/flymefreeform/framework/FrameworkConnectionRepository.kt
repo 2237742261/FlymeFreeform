@@ -8,6 +8,7 @@ import android.util.Log
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
 import com.eta.flymefreeform.config.ConfigSnapshotCodec
+import com.eta.flymefreeform.config.CornerCallMode
 import com.eta.flymefreeform.config.ModulePreferences
 import com.eta.flymefreeform.config.SharedStateProtocol
 import com.eta.flymefreeform.config.ModuleSettingsSnapshot
@@ -62,11 +63,18 @@ internal class FrameworkConnectionRepository(
     fun setModuleEnabled(enabled: Boolean) =
         updateSettings { it.copy(enabled = enabled) }
 
-    fun setLeftCornerEnabled(enabled: Boolean) =
-        updateSettings { it.copy(leftCornerEnabled = enabled) }
-
-    fun setRightCornerEnabled(enabled: Boolean) =
-        updateSettings { it.copy(rightCornerEnabled = enabled) }
+    /**
+     * @author bomo 轮盘呼出方式（常规 / 仅左下 / 仅右下）。
+     * 一次写入同时更新两侧开关（存储键不变），
+     * 避免分两次推配置导致热区短暂两边都开着。
+     */
+    fun setCornerCallMode(mode: CornerCallMode) =
+        updateSettings {
+            it.copy(
+                leftCornerEnabled = mode.leftEnabled,
+                rightCornerEnabled = mode.rightEnabled,
+            )
+        }
 
     fun setCornerTriggerRangeDp(rangeDp: Int) =
         updateSettings {

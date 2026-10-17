@@ -10,6 +10,7 @@ import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
 import com.eta.flymefreeform.apps.InstalledLauncherApp
+import com.eta.flymefreeform.config.CornerCallMode
 import com.eta.flymefreeform.config.OutsideTapCloseMode
 import com.eta.flymefreeform.framework.ScopeRestartOutcome
 import com.eta.flymefreeform.config.TriggerShape
@@ -30,8 +31,8 @@ internal fun FlymeFreeformNavHost(
     state: FrameworkConnectionState,
     apps: List<InstalledLauncherApp>,
     onModuleEnabledChange: (Boolean) -> Unit,
-    onLeftCornerEnabledChange: (Boolean) -> Unit,
-    onRightCornerEnabledChange: (Boolean) -> Unit,
+    /** @author bomo 轮盘呼出方式（常规 / 仅左下 / 仅右下）变更。 */
+    onCornerCallModeChange: (CornerCallMode) -> Unit,
     onCornerTriggerRangeChange: (Int) -> Unit,
     /** @author bomo 触发热区形状（扇形 / 三角形）变更。 */
     onTriggerShapeChange: (TriggerShape) -> Unit,
@@ -82,8 +83,7 @@ internal fun FlymeFreeformNavHost(
                     ControlScreen(
                         state = state,
                         onModuleEnabledChange = onModuleEnabledChange,
-                        onLeftCornerEnabledChange = onLeftCornerEnabledChange,
-                        onRightCornerEnabledChange = onRightCornerEnabledChange,
+                        onCornerCallModeChange = onCornerCallModeChange,
                         onCornerTriggerRangeChange = onCornerTriggerRangeChange,
                         onTriggerShapeChange = onTriggerShapeChange,
                         onTriggerHorizontalDpChange = onTriggerHorizontalDpChange,
