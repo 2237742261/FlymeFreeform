@@ -1,0 +1,690 @@
+package io.github.mangi.flymefreeform.ui
+import android.os.SystemClock
+import androidx.compose.material.icons.rounded.Vibration
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.platform.LocalContext
+
+import android.content.ActivityNotFoundException
+import androidx.annotation.StringRes
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AccountTree
+import androidx.compose.material.icons.rounded.Apps
+import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.ElectricalServices
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.ScreenRotation
+import androidx.compose.material.icons.rounded.SportsEsports
+import androidx.compose.material.icons.rounded.Straighten
+import androidx.compose.material.icons.rounded.SwipeRight
+import androidx.compose.material.icons.rounded.SwipeUp
+import androidx.compose.material.icons.rounded.TouchApp
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import io.github.mangi.flymefreeform.BuildConfig
+import io.github.mangi.flymefreeform.R
+import io.github.mangi.flymefreeform.config.ModulePreferences
+import io.github.mangi.flymefreeform.config.OutsideTapCloseMode
+import io.github.mangi.flymefreeform.framework.FrameworkConnectionIssue
+import io.github.mangi.flymefreeform.framework.FrameworkConnectionState
+import io.github.mangi.flymefreeform.framework.FrameworkConnectionStatus
+import io.github.mangi.flymefreeform.ui.component.TopBarBackdrop
+import io.github.mangi.flymefreeform.ui.component.captureForTopBar
+import io.github.mangi.flymefreeform.ui.component.rememberTopBarBackdrop
+import io.github.mangi.flymefreeform.ui.component.topBarContainerColor
+import kotlin.math.roundToInt
+import top.yukonga.miuix.kmp.basic.BasicComponent
+import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.DropdownItem
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TopAppBar
+import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.preference.OverlaySpinnerPreference
+import top.yukonga.miuix.kmp.preference.SliderPreference
+import top.yukonga.miuix.kmp.preference.SwitchPreference
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.overScrollVertical
+import top.yukonga.miuix.kmp.utils.scrollEndHaptic
+
+@Composable
+internal fun ControlScreen(
+    state: FrameworkConnectionState,
+    onModuleEnabledChange: (Boolean) -> Unit,
+    onCornerSidesChange: (Boolean, Boolean) -> Unit,
+    onCornerTriggerRangeChange: (Int) -> Unit,
+    onOutsideTapCloseModeChange: (OutsideTapCloseMode) -> Unit,
+    onHandleSwipeUpToMiniEnabledChange: (Boolean) -> Unit,
+    onKeepAwakeEnabledChange: (Boolean) -> Unit,
+    onRadialVibrateEnabledChange: (Boolean) -> Unit,
+    onRadialVibrateStrengthChange: (Int) -> Unit,
+    onPauseInLandscapeChange: (Boolean) -> Unit,
+    onPauseInGameModeChange: (Boolean) -> Unit,
+    onRequestScopes: () -> Unit,
+    onNavigateToPinnedApps: () -> Unit,
+) {
+    val scrollBehavior = MiuixScrollBehavior()
+    val backdrop = rememberTopBarBackdrop()
+    val topBarColor = topBarContainerColor(backdrop)
+    val featuresEnabled = state.canChangeSettings && state.settings.enabled
+    var cornerRangePreviewDp by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(featuresEnabled) {
+        if (!featuresEnabled) cornerRangePreviewDp = null
+    }
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val windowWidth = maxWidth
+        val isWideScreen = windowWidth >= WideWindowMinWidth
+        Scaffold(
+            contentWindowInsets =
+                WindowInsets.systemBars
+                    .union(WindowInsets.displayCutout)
+                    .union(WindowInsets.ime),
+            topBar = {
+                TopBarBackdrop(backdrop) {
+                    if (isWideScreen) {
+                        SmallTopAppBar(
+                            title = stringResource(R.string.app_name),
+                            color = topBarColor,
+                            scrollBehavior = scrollBehavior,
+                        )
+                    } else {
+                        TopAppBar(
+                            title = stringResource(R.string.app_name),
+                            color = topBarColor,
+                            scrollBehavior = scrollBehavior,
+                        )
+                    }
+                }
+            },
+        ) { innerPadding ->
+            val layoutDirection = LocalLayoutDirection.current
+            val safeStart = innerPadding.calculateStartPadding(layoutDirection)
+            val safeEnd = innerPadding.calculateEndPadding(layoutDirection)
+            val safeWidth = (windowWidth - safeStart - safeEnd).coerceAtLeast(0.dp)
+            val centeredSide = maxOf(ScreenHorizontalMargin, (safeWidth - ScreenContentMaxWidth) / 2)
+            Box(modifier = Modifier.fillMaxSize().captureForTopBar(backdrop)) {
+                LazyColumn(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .consumeWindowInsets(innerPadding)
+                            .scrollEndHaptic()
+                            .overScrollVertical()
+                            .nestedScroll(scrollBehavior.nestedScrollConnection),
+                    verticalArrangement = Arrangement.spacedBy(CardSpacing),
+                    contentPadding =
+                        PaddingValues(
+                            start = safeStart + centeredSide,
+                            top = innerPadding.calculateTopPadding() + ScreenTopSpacing,
+                            end = safeEnd + centeredSide,
+                            bottom = innerPadding.calculateBottomPadding() + ScreenBottomSpacing,
+                        ),
+                    overscrollEffect = null,
+                ) {
+                    item(key = "runtime") {
+                        RuntimeCard(
+                            state = state,
+                            onModuleEnabledChange = onModuleEnabledChange,
+                            onRequestScopes = onRequestScopes,
+                        )
+                    }
+                    item(key = "settings") {
+                        SettingsCard(
+                            state = state,
+                            featuresEnabled = featuresEnabled,
+                            onCornerSidesChange = onCornerSidesChange,
+                            onCornerTriggerRangeChange = onCornerTriggerRangeChange,
+                            onCornerRangePreviewChange = { cornerRangePreviewDp = it },
+                            onNavigateToPinnedApps = onNavigateToPinnedApps,
+                        )
+                    }
+                    item(key = "window_interaction") {
+                        WindowInteractionCard(
+                            state = state,
+                            featuresEnabled = featuresEnabled,
+                            onOutsideTapCloseModeChange = onOutsideTapCloseModeChange,
+                            onHandleSwipeUpToMiniEnabledChange =
+                                onHandleSwipeUpToMiniEnabledChange,
+                            onKeepAwakeEnabledChange = onKeepAwakeEnabledChange,
+                            onRadialVibrateEnabledChange = onRadialVibrateEnabledChange,
+                            onRadialVibrateStrengthChange = onRadialVibrateStrengthChange,
+                        )
+                    }
+                    item(key = "environment") {
+                        EnvironmentCard(
+                            state = state,
+                            featuresEnabled = featuresEnabled,
+                            onPauseInLandscapeChange = onPauseInLandscapeChange,
+                            onPauseInGameModeChange = onPauseInGameModeChange,
+                        )
+                    }
+                    item(key = "about") { AboutCard() }
+                }
+            }
+        }
+        cornerRangePreviewDp?.let { rangeDp ->
+            CornerRangePreview(
+                rangeDp = rangeDp,
+                leftEnabled = state.settings.leftCornerEnabled,
+                rightEnabled = state.settings.rightCornerEnabled,
+            )
+        }
+    }
+}
+
+@Composable
+private fun EnvironmentCard(
+    state: FrameworkConnectionState,
+    featuresEnabled: Boolean,
+    onPauseInLandscapeChange: (Boolean) -> Unit,
+    onPauseInGameModeChange: (Boolean) -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        SwitchPreference(
+            checked = state.settings.pauseInLandscape,
+            onCheckedChange = onPauseInLandscapeChange,
+            title = stringResource(R.string.pause_in_landscape_title),
+            summary = stringResource(R.string.pause_in_landscape_summary),
+            enabled = featuresEnabled,
+            startAction = { PreferenceIcon(Icons.Rounded.ScreenRotation, featuresEnabled) },
+        )
+        SwitchPreference(
+            checked = state.settings.pauseInGameMode,
+            onCheckedChange = onPauseInGameModeChange,
+            title = stringResource(R.string.pause_in_game_mode_title),
+            summary = stringResource(R.string.pause_in_game_mode_summary),
+            enabled = featuresEnabled,
+            startAction = { PreferenceIcon(Icons.Rounded.SportsEsports, featuresEnabled) },
+        )
+    }
+}
+
+@Composable
+private fun WindowInteractionCard(
+    state: FrameworkConnectionState,
+    featuresEnabled: Boolean,
+    onOutsideTapCloseModeChange: (OutsideTapCloseMode) -> Unit,
+    onHandleSwipeUpToMiniEnabledChange: (Boolean) -> Unit,
+    onKeepAwakeEnabledChange: (Boolean) -> Unit,
+    onRadialVibrateEnabledChange: (Boolean) -> Unit,
+    onRadialVibrateStrengthChange: (Int) -> Unit,
+) {
+    val modes = OutsideTapCloseMode.entries
+    val items =
+        listOf(
+            DropdownItem(text = stringResource(R.string.outside_tap_mode_disabled)),
+            DropdownItem(text = stringResource(R.string.outside_tap_mode_single)),
+            DropdownItem(text = stringResource(R.string.outside_tap_mode_double)),
+            DropdownItem(text = stringResource(R.string.outside_tap_mode_caption_double)),
+        )
+    Card(modifier = Modifier.fillMaxWidth()) {
+        OverlaySpinnerPreference(
+            items = items,
+            selectedIndex = modes.indexOf(state.settings.outsideTapCloseMode),
+            title = stringResource(R.string.outside_tap_close_title),
+            summary = stringResource(R.string.outside_tap_close_summary),
+            enabled = featuresEnabled,
+            startAction = { PreferenceIcon(Icons.Rounded.TouchApp, featuresEnabled) },
+            onSelectedIndexChange = { index ->
+                modes.getOrNull(index)?.let(onOutsideTapCloseModeChange)
+            },
+        )
+        SwitchPreference(
+            checked = state.settings.handleSwipeUpToMiniEnabled,
+            onCheckedChange = onHandleSwipeUpToMiniEnabledChange,
+            title = stringResource(R.string.handle_swipe_up_to_mini_title),
+            summary = stringResource(R.string.handle_swipe_up_to_mini_summary),
+            enabled = featuresEnabled,
+            startAction = { PreferenceIcon(Icons.Rounded.SwipeUp, featuresEnabled) },
+        )
+        SwitchPreference(
+            checked = state.settings.radialVibrateEnabled,
+            onCheckedChange = onRadialVibrateEnabledChange,
+            title = stringResource(R.string.radial_vibrate_title),
+            summary = stringResource(R.string.radial_vibrate_summary),
+            enabled = state.canChangeSettings,
+            startAction = { PreferenceIcon(Icons.Rounded.Vibration, state.canChangeSettings) },
+        )
+        if (state.settings.radialVibrateEnabled) {
+            RadialVibrateStrengthSlider(
+                confirmedValue = state.settings.radialVibrateStrength,
+                enabled = state.canChangeSettings,
+                onCommit = onRadialVibrateStrengthChange,
+            )
+        }
+        SwitchPreference(
+            checked = state.settings.keepAwakeEnabled,
+            onCheckedChange = onKeepAwakeEnabledChange,
+            title = stringResource(R.string.keep_awake_title),
+            summary = stringResource(R.string.keep_awake_summary),
+            enabled = featuresEnabled,
+            startAction = { PreferenceIcon(Icons.Rounded.LightMode, featuresEnabled) },
+        )
+    }
+}
+
+@Composable
+private fun RuntimeCard(
+    state: FrameworkConnectionState,
+    onModuleEnabledChange: (Boolean) -> Unit,
+    onRequestScopes: () -> Unit,
+) {
+    val presentation = frameworkPresentation(state)
+    val moduleSummary =
+        when {
+            state.isUpdating -> stringResource(R.string.module_enabled_summary_updating)
+            !state.canChangeSettings && state.status != FrameworkConnectionStatus.Connected ->
+                stringResource(R.string.module_enabled_summary_waiting)
+            state.missingScopes.isNotEmpty() -> stringResource(R.string.module_enabled_summary_scope)
+            state.settings.enabled -> stringResource(R.string.module_enabled_summary_on)
+            else -> stringResource(R.string.module_enabled_summary_off)
+        }
+    val showScopeAction =
+        state.status == FrameworkConnectionStatus.Connected && state.missingScopes.isNotEmpty()
+    Card(modifier = Modifier.fillMaxWidth()) {
+        SwitchPreference(
+            checked = state.settings.enabled,
+            onCheckedChange = onModuleEnabledChange,
+            title = stringResource(R.string.module_enabled_title),
+            summary = moduleSummary,
+            enabled = state.canChangeSettings,
+            startAction = {
+                PreferenceIcon(Icons.Rounded.PowerSettingsNew, state.canChangeSettings)
+            },
+        )
+        BasicComponent(
+            title = stringResource(R.string.framework_service_title),
+            summary = presentation.summary,
+            endActions = {
+                Text(
+                    text = presentation.label,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    style = MiuixTheme.textStyles.body2,
+                )
+            },
+            startAction = { PreferenceIcon(Icons.Rounded.ElectricalServices) },
+        )
+        AnimatedVisibility(visible = showScopeAction) {
+            ArrowPreference(
+                title = stringResource(R.string.scope_title),
+                summary =
+                    if (state.isRequestingScope) stringResource(R.string.scope_requesting)
+                    else if (state.issue == FrameworkConnectionIssue.ScopeRequestFailed) {
+                        stringResource(R.string.scope_request_failed)
+                    } else {
+                        stringResource(
+                            R.string.scope_missing,
+                            state.missingScopes.joinToString(" · "),
+                        )
+                    },
+                onClick = onRequestScopes,
+                enabled = state.canRequestScope,
+                startAction = { PreferenceIcon(Icons.Rounded.AccountTree, state.canRequestScope) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsCard(
+    state: FrameworkConnectionState,
+    featuresEnabled: Boolean,
+    onCornerSidesChange: (Boolean, Boolean) -> Unit,
+    onCornerTriggerRangeChange: (Int) -> Unit,
+    onCornerRangePreviewChange: (Int?) -> Unit,
+    onNavigateToPinnedApps: () -> Unit,
+) {
+    val selectedSideIndex =
+        when {
+            state.settings.leftCornerEnabled && !state.settings.rightCornerEnabled -> 1
+            !state.settings.leftCornerEnabled && state.settings.rightCornerEnabled -> 2
+            else -> 0
+        }
+    val sideItems =
+        listOf(
+            DropdownItem(text = stringResource(R.string.corner_trigger_side_both)),
+            DropdownItem(text = stringResource(R.string.corner_trigger_side_left)),
+            DropdownItem(text = stringResource(R.string.corner_trigger_side_right)),
+        )
+    val appsSummary =
+        when {
+            !state.settings.pinsSaved -> stringResource(R.string.radial_apps_recent_summary)
+            state.settings.pinnedTargets.isEmpty() -> stringResource(R.string.radial_apps_empty_summary)
+            else -> stringResource(R.string.radial_apps_count_summary, state.settings.pinnedTargets.size)
+        }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        OverlaySpinnerPreference(
+            items = sideItems,
+            selectedIndex = selectedSideIndex,
+            title = stringResource(R.string.corner_trigger_side_title),
+            summary = stringResource(R.string.corner_trigger_side_summary),
+            enabled = featuresEnabled,
+            startAction = { PreferenceIcon(Icons.Rounded.SwipeRight, featuresEnabled) },
+            onSelectedIndexChange = { index ->
+                when (index) {
+                    0 -> onCornerSidesChange(true, true)
+                    1 -> onCornerSidesChange(true, false)
+                    2 -> onCornerSidesChange(false, true)
+                }
+            },
+        )
+        RemoteDpSliderPreference(
+            icon = Icons.Rounded.Straighten,
+            confirmedValue = state.settings.cornerTriggerRangeDp,
+            isUpdating = state.isUpdating,
+            enabled = featuresEnabled,
+            title = stringResource(R.string.corner_trigger_range_title),
+            summary = stringResource(R.string.corner_trigger_range_summary),
+            onPreviewChange = onCornerRangePreviewChange,
+            onCommit = onCornerTriggerRangeChange,
+        )
+        ArrowPreference(
+            title = stringResource(R.string.radial_apps_title),
+            summary = appsSummary,
+            onClick = onNavigateToPinnedApps,
+            enabled = featuresEnabled,
+            startAction = { PreferenceIcon(Icons.Rounded.Apps, featuresEnabled) },
+        )
+    }
+}
+
+/** 震动强度滑条：拖动过程中按当前强度实时给一次短震动，方便直接感受。 */
+@Composable
+private fun RadialVibrateStrengthSlider(
+    confirmedValue: Int,
+    enabled: Boolean,
+    onCommit: (Int) -> Unit,
+) {
+    val context = LocalContext.current
+    var draftValue by rememberSaveable { mutableFloatStateOf(confirmedValue.toFloat()) }
+    var isDragging by remember { mutableStateOf(false) }
+    var lastTickAt by remember { mutableLongStateOf(0L) }
+    var lastPreviewed by remember { mutableIntStateOf(-1) }
+    LaunchedEffect(confirmedValue) {
+        if (!isDragging) draftValue = confirmedValue.toFloat()
+    }
+    SliderPreference(
+        value = draftValue,
+        onValueChange = { value ->
+            isDragging = true
+            val draft =
+                ModulePreferences.coerceRadialVibrateStrength(value.roundToInt())
+            draftValue = draft.toFloat()
+            val now = SystemClock.uptimeMillis()
+            // 只在强度真的变化时震；手指按住不动不会一直震
+            if (draft != lastPreviewed && now - lastTickAt >= VIBRATE_PREVIEW_INTERVAL_MS) {
+                lastTickAt = now
+                lastPreviewed = draft
+                vibratePreview(context, draft)
+            }
+        },
+        title = stringResource(R.string.radial_vibrate_strength_title),
+        summary = stringResource(R.string.radial_vibrate_strength_summary),
+        valueText = "$%d".format(draftValue.roundToInt()),
+        enabled = enabled,
+        startAction = { PreferenceIcon(Icons.Rounded.Vibration, enabled) },
+        valueRange =
+            ModulePreferences.MIN_RADIAL_VIBRATE_STRENGTH.toFloat()..
+                ModulePreferences.MAX_RADIAL_VIBRATE_STRENGTH.toFloat(),
+        steps = 0,
+        onValueChangeFinished = {
+            isDragging = false
+            onCommit(ModulePreferences.coerceRadialVibrateStrength(draftValue.roundToInt()))
+        },
+    )
+}
+
+/** 设置页拖动强度条时的触感预览；失败静默。 */
+private fun vibratePreview(context: android.content.Context, strength: Int) {
+    try {
+        val vibrator =
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                context.getSystemService(android.os.VibratorManager::class.java)?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+            } ?: return
+        val amplitude =
+            (1 + ModulePreferences.coerceRadialVibrateStrength(strength) * 254 / 100).coerceIn(1, 255)
+        vibrator.vibrate(android.os.VibrationEffect.createOneShot(VIBRATE_PREVIEW_MS, amplitude))
+    } catch (_: RuntimeException) {
+        // 预览失败不影响设置
+    }
+}
+
+private const val VIBRATE_PREVIEW_MS = 20L
+private const val VIBRATE_PREVIEW_INTERVAL_MS = 90L
+
+@Composable
+private fun RemoteDpSliderPreference(
+    icon: ImageVector,
+    confirmedValue: Int,
+    isUpdating: Boolean,
+    enabled: Boolean,
+    title: String,
+    summary: String,
+    onPreviewChange: (Int?) -> Unit,
+    onCommit: (Int) -> Unit,
+) {
+    var draftValue by rememberSaveable { mutableFloatStateOf(confirmedValue.toFloat()) }
+    var isDragging by remember { mutableStateOf(false) }
+    LaunchedEffect(confirmedValue, isUpdating, enabled) {
+        if (!enabled) {
+            isDragging = false
+            onPreviewChange(null)
+        }
+        if (!isDragging && !isUpdating) draftValue = confirmedValue.toFloat()
+    }
+    SliderPreference(
+        value = draftValue,
+        onValueChange = { value ->
+            isDragging = true
+            val draft = ModulePreferences.coerceCornerTriggerRangeDp(value.roundToInt())
+            draftValue = draft.toFloat()
+            onPreviewChange(draft)
+        },
+        title = title,
+        summary = summary,
+        valueText = stringResource(R.string.dp_value, draftValue.roundToInt()),
+        enabled = enabled,
+        startAction = { PreferenceIcon(icon, enabled) },
+        valueRange =
+            ModulePreferences.MIN_CORNER_TRIGGER_RANGE_DP.toFloat()..
+                ModulePreferences.MAX_CORNER_TRIGGER_RANGE_DP.toFloat(),
+        steps =
+            ModulePreferences.MAX_CORNER_TRIGGER_RANGE_DP -
+                ModulePreferences.MIN_CORNER_TRIGGER_RANGE_DP -
+                1,
+        onValueChangeFinished = {
+            isDragging = false
+            onPreviewChange(null)
+            val committed =
+                ModulePreferences.coerceCornerTriggerRangeDp(draftValue.roundToInt())
+            draftValue = committed.toFloat()
+            if (committed != confirmedValue) onCommit(committed)
+        },
+    )
+}
+
+@Composable
+private fun CornerRangePreview(
+    rangeDp: Int,
+    leftEnabled: Boolean,
+    rightEnabled: Boolean,
+) {
+    val activeColor = MiuixTheme.colorScheme.primary
+    val inactiveColor = MiuixTheme.colorScheme.onSurfaceVariantSummary
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val radius = rangeDp.dp.toPx()
+        val arcSize = Size(radius * 2f, radius * 2f)
+        val strokeWidth = 2.dp.toPx()
+        val dash = PathEffect.dashPathEffect(floatArrayOf(7.dp.toPx(), 5.dp.toPx()))
+
+        fun drawCorner(startAngle: Float, topLeft: Offset, enabled: Boolean) {
+            val color = if (enabled) activeColor else inactiveColor
+            drawArc(
+                color = color.copy(alpha = if (enabled) 0.22f else 0.08f),
+                startAngle = startAngle,
+                sweepAngle = 90f,
+                useCenter = true,
+                topLeft = topLeft,
+                size = arcSize,
+            )
+            drawArc(
+                color = color.copy(alpha = if (enabled) 0.82f else 0.30f),
+                startAngle = startAngle,
+                sweepAngle = 90f,
+                useCenter = false,
+                topLeft = topLeft,
+                size = arcSize,
+                style = Stroke(width = strokeWidth, pathEffect = dash),
+            )
+        }
+
+        drawCorner(
+            startAngle = 270f,
+            topLeft = Offset(-radius, size.height - radius),
+            enabled = leftEnabled,
+        )
+        drawCorner(
+            startAngle = 180f,
+            topLeft = Offset(size.width - radius, size.height - radius),
+            enabled = rightEnabled,
+        )
+    }
+}
+
+@Composable
+private fun AboutCard() {
+    val uriHandler = LocalUriHandler.current
+    Card(modifier = Modifier.fillMaxWidth()) {
+        BasicComponent(
+            title = stringResource(R.string.about_version_title),
+            endActions = {
+                Text(
+                    text = stringResource(
+                        R.string.about_version_format,
+                        BuildConfig.VERSION_NAME,
+                        BuildConfig.VERSION_CODE.toString(),
+                    ),
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    style = MiuixTheme.textStyles.body2,
+                )
+            },
+            startAction = { PreferenceIcon(Icons.Rounded.Info) },
+        )
+        ArrowPreference(
+            title = stringResource(R.string.about_github_title),
+            summary = stringResource(R.string.about_github_summary),
+            onClick = {
+                try {
+                    uriHandler.openUri(GITHUB_REPO_URL)
+                } catch (_: IllegalArgumentException) {
+                } catch (_: ActivityNotFoundException) {
+                }
+            },
+            startAction = { PreferenceIcon(Icons.Rounded.Code) },
+        )
+    }
+}
+
+@Composable
+private fun PreferenceIcon(imageVector: ImageVector, enabled: Boolean = true) {
+    Icon(
+        imageVector = imageVector,
+        contentDescription = null,
+        modifier = Modifier.padding(end = 6.dp).size(24.dp),
+        tint =
+            if (enabled) MiuixTheme.colorScheme.onBackground
+            else MiuixTheme.colorScheme.disabledOnSecondaryVariant,
+    )
+}
+
+@Composable
+private fun frameworkPresentation(state: FrameworkConnectionState): FrameworkPresentation =
+    when (state.status) {
+        FrameworkConnectionStatus.Waiting -> FrameworkPresentation(stringResource(R.string.framework_status_waiting), stringResource(R.string.framework_waiting_summary))
+        FrameworkConnectionStatus.Connected -> {
+            val unknown = stringResource(R.string.framework_unknown_value)
+            FrameworkPresentation(
+                stringResource(R.string.framework_status_connected),
+                stringResource(
+                    R.string.framework_connected_summary,
+                    state.frameworkName ?: unknown,
+                    state.frameworkVersion ?: unknown,
+                    state.apiVersion?.toString() ?: unknown,
+                ),
+            )
+        }
+        FrameworkConnectionStatus.Incompatible -> FrameworkPresentation(stringResource(R.string.framework_status_incompatible), stringResource(state.issue.incompatibleSummary()))
+        FrameworkConnectionStatus.Error -> FrameworkPresentation(stringResource(R.string.framework_status_error), stringResource(state.issue.errorSummary()))
+    }
+
+@StringRes
+private fun FrameworkConnectionIssue?.incompatibleSummary(): Int =
+    when (this) {
+        FrameworkConnectionIssue.ServiceApiTooOld -> R.string.framework_api_too_old_summary
+        FrameworkConnectionIssue.RemoteCapabilityMissing -> R.string.framework_remote_missing_summary
+        FrameworkConnectionIssue.SystemCapabilityMissing -> R.string.framework_system_missing_summary
+        FrameworkConnectionIssue.MultipleServices -> R.string.framework_multiple_services_summary
+        else -> R.string.framework_connection_failed_summary
+    }
+
+@StringRes
+private fun FrameworkConnectionIssue?.errorSummary(): Int =
+    when (this) {
+        FrameworkConnectionIssue.WriteFailed -> R.string.framework_write_failed_summary
+        else -> R.string.framework_connection_failed_summary
+    }
+
+private data class FrameworkPresentation(val label: String, val summary: String)
+
+private const val GITHUB_REPO_URL = "https://github.com/Mangi-11/FlymeFreeform"
+
+internal val ScreenHorizontalMargin = 12.dp
+internal val ScreenContentMaxWidth = 600.dp
+internal val WideWindowMinWidth = 600.dp
+internal val ScreenTopSpacing = 12.dp
+internal val ScreenBottomSpacing = 12.dp
+private val CardSpacing = 12.dp

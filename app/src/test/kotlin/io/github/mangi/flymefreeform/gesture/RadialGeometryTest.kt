@@ -1,0 +1,57 @@
+package io.github.mangi.flymefreeform.gesture
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class RadialGeometryTest {
+    @Test
+    fun hiddenMenuCannotSelectAnItemAtTheCollapsedOrigin() {
+        val layout = RadialGeometry.layout(CornerSide.Left, 400f, 890f, 0f, 7)
+        assertNull(RadialGeometry.selection(layout, 0f, 890f, 0, 0f, 0f))
+    }
+
+    @Test
+    fun listOrderRunsFromOuterSlotTowardMore() {
+        val layout = RadialGeometry.layout(CornerSide.Left, 400f, 890f, 242f, 7)
+        val degrees = layout.itemCenters.map { RadialGeometry.polarAngle(layout, it) * 180f / kotlin.math.PI.toFloat() }
+        degrees.zip(listOf(-81f, -69f, -57f, -45f, -33f, -21f, -9f)).forEach { (actual, expected) ->
+            assertEquals(expected, actual, 0.001f)
+        }
+        val onlyMore = RadialGeometry.layout(CornerSide.Left, 400f, 890f, 242f, 1)
+        assertEquals(-45f, RadialGeometry.polarAngle(onlyMore, onlyMore.itemCenters.single()) * 180f / kotlin.math.PI.toFloat(), 0.001f)
+    }
+
+    @Test
+    fun leftAndRightLayoutsAreExactMirrors() {
+        val left = RadialGeometry.layout(CornerSide.Left, 1000f, 2000f, 400f, 7)
+        val right = RadialGeometry.layout(CornerSide.Right, 1000f, 2000f, 400f, 7)
+        left.itemCenters.zip(right.itemCenters).forEach { (l, r) ->
+            assertEquals(1000f, l.x + r.x, 0.001f)
+            assertEquals(l.y, r.y, 0.001f)
+        }
+    }
+
+    @Test
+    fun previousSelectionUsesLargerKeepRadius() {
+        val layout = RadialGeometry.layout(CornerSide.Left, 1000f, 2000f, 400f, 7)
+        val center = layout.itemCenters[2]
+        assertEquals(2, RadialGeometry.selection(layout, center.x + 39f, center.y, 2, 30f, 42f))
+        assertNull(RadialGeometry.selection(layout, center.x + 45f, center.y, 2, 30f, 42f))
+    }
+
+    @Test
+    fun appCentersStayInsideScreenAndMoreRemainsClosestToCorner() {
+        val width = 1000f
+        val height = 2000f
+        val left = RadialGeometry.layout(CornerSide.Left, width, height, 400f, 7)
+        val right = RadialGeometry.layout(CornerSide.Right, width, height, 400f, 7)
+
+        assertTrue(left.itemCenters.dropLast(1).all { center -> center.x > 0f })
+        assertTrue(right.itemCenters.dropLast(1).all { center -> center.x < width })
+        assertTrue(left.itemCenters.last().y > left.itemCenters.dropLast(1).maxOf { it.y })
+        assertTrue(right.itemCenters.last().y > right.itemCenters.dropLast(1).maxOf { it.y })
+    }
+
+}

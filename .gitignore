@@ -1,0 +1,10 @@
+build/
+.gradle/
+.kotlin/
+.idea/
+*.iml
+local.properties
+release.keystore
+*.apk
+captures/
+docs/images/preview.gif
