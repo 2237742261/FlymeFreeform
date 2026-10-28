@@ -14,7 +14,7 @@ import io.github.mangi.flymefreeform.config.ModulePreferences
  * （本机 haptic_feedback_enabled=0）这两类会被 VibratorManagerService 整体过滤掉，完全不震。
  */
 internal object Haptics {
-    private const val DURATION_MS = 20L
+    private const val DURATION_MS = 80L
 
     fun tick(context: Context, strengthPercent: Int) {
         try {

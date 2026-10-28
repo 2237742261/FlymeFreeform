@@ -14,6 +14,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.os.VibrationEffect
+import android.provider.Settings
 import android.os.Vibrator
 import android.util.Log
 import android.view.Gravity
@@ -51,6 +52,8 @@ internal class SystemUiKeepAwakeMonitor(
     // 申请常亮时的前台应用；切到别的应用就立刻释放，让系统重新开始息屏计时。
     private var keepPackage: String? = null
     private var lastForegroundCheckAt = 0L
+    private var lastBacklightRatio = -1f
+    private var lastDumpsysAt = 0L
 
     private val screenOffReceiver =
         object : BroadcastReceiver() {
@@ -97,22 +100,63 @@ internal class SystemUiKeepAwakeMonitor(
         }
 
     private fun tick() {
-        // 息屏时没必要每拍都 fork 一次 dumpsys（息屏的释放由 SCREEN_OFF 广播负责）。
+        // 息屏时没必要每拍都检测（息屏的释放由 SCREEN_OFF 广播负责）。
         if (!powerManager.isInteractive) return
-        val state = readDisplayPolicy() ?: return
-        when {
-            state == STATE_DIM -> dimmed = true
-            state == STATE_OFF -> {
-                dimmed = false
-                releaseScreenOn()
-            }
-            dimmed -> {
-                dimmed = false
-                if (!isKeyguardLocked()) {
-                    showBubble()
+        val ratio = backlightRatio()
+        if (ratio == null) {
+            // 没有 backlight 节点时退回 dumpsys 兜底（低频，避免 fork 开销）
+            val now = SystemClock.uptimeMillis()
+            if (now - lastDumpsysAt < DUMPSYS_FALLBACK_INTERVAL_MS) return
+            lastDumpsysAt = now
+            val state = readDisplayPolicy() ?: return
+            when {
+                state == STATE_DIM -> dimmed = true
+                state == STATE_OFF -> {
+                    dimmed = false
+                    releaseScreenOn()
+                }
+                dimmed -> {
+                    dimmed = false
+                    if (!isKeyguardLocked()) showBubble()
                 }
             }
+            return
         }
+        // 事件式判定：实际背光相对「设定亮度」突然掉下去 = 压暗；回到设定值 = 点亮。
+        when {
+            ratio < DIM_RATIO && (lastBacklightRatio - ratio) > DIM_DROP -> {
+                dimmed = true
+                module.log(Log.DEBUG, TAG, "KEEP_AWAKE_DIM_DETECTED ratio=$ratio")
+            }
+            ratio > BRIGHT_RATIO && dimmed -> {
+                dimmed = false
+                module.log(Log.DEBUG, TAG, "KEEP_AWAKE_LIT_AGAIN ratio=$ratio")
+                if (!isKeyguardLocked()) showBubble()
+            }
+        }
+        lastBacklightRatio = ratio
+    }
+
+    // 读 /sys 背光并与系统设定亮度比值：一次文件读 + 一次内存读，微秒级，不必 fork dumpsys。
+    private fun backlightRatio(): Float? {
+        val actual =
+            try {
+                java.io.File(BACKLIGHT_PATH).readText().trim().toLongOrNull()
+            } catch (_: Exception) {
+                null
+            } ?: return null
+        val setting =
+            try {
+                Settings.System.getInt(
+                    context.contentResolver,
+                    Settings.System.SCREEN_BRIGHTNESS,
+                    -1,
+                )
+            } catch (_: Exception) {
+                -1
+            }
+        if (setting <= 0) return null
+        return actual.toFloat() / setting.toFloat()
     }
 
     /** 读 ColorOS 的显示电源状态：压暗是 policy=DIM，正常为 BRIGHT。 */
@@ -353,7 +397,12 @@ internal class SystemUiKeepAwakeMonitor(
         const val DUMPSYS_COMMAND = "/system/bin/dumpsys display"
         const val GREP_COMMAND = "/system/bin/grep"
         const val WAKE_LOCK_TAG = "flymefreeform:keep"
-        const val POLL_INTERVAL_MS = 1_200L
+        const val POLL_INTERVAL_MS = 500L
+        const val BACKLIGHT_PATH = "/sys/class/backlight/panel0-backlight/brightness"
+        const val DIM_RATIO = 0.62f
+        const val DIM_DROP = 0.15f
+        const val BRIGHT_RATIO = 0.75f
+        const val DUMPSYS_FALLBACK_INTERVAL_MS = 1_500L
         const val FOREGROUND_POLL_MS = 2_000L
         const val ACTIVITY_DUMPSYS = "/system/bin/dumpsys activity activities"
         val AFFINITY_PATTERN = Regex("A=[0-9]+:([A-Za-z0-9_.]+)")
