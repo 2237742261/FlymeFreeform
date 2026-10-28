@@ -271,7 +271,10 @@ internal class SystemUiKeepAwakeMonitor(
         }
     }
 
-    // 顶层任务里的包名（A=uid:pkg）；拿不到就返回 null，避免误判释放。
+    // 顶层任务的包名；拿不到就返回 null，避免误判释放。
+    // 注意：桌面任务的 dumpsys 行是 `* Task{… type=home …}`，既没有 A= 也没有 I=，
+    // 紧随其后那条 launcher 任务才有 `I=com.android.launcher/.Launcher`；
+    // 所以不能只 grep `A=`（会跳过桌面、匹配到上一个应用自己的任务 → 回桌面不释放）。
     private fun foregroundPackage(): String? {
         val process =
             try {
@@ -279,24 +282,27 @@ internal class SystemUiKeepAwakeMonitor(
                     arrayOf(
                         "/system/bin/sh",
                         "-c",
-                        "$ACTIVITY_DUMPSYS 2>/dev/null | $GREP_COMMAND -m1 -E 'A=[0-9]+:'",
+                        "$ACTIVITY_DUMPSYS 2>/dev/null | $GREP_COMMAND -m3 -F ' * Task{'",
                     ),
                 )
             } catch (exception: Exception) {
                 logThrottled("KEEP_AWAKE_FOREGROUND_EXEC_FAILED", exception)
                 return null
             }
-        val line =
+        val lines =
             try {
                 BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
-                    reader.readLine().orEmpty()
+                    generateSequence { reader.readLine() }.take(3).toList()
                 }
             } catch (exception: Exception) {
-                null
+                emptyList()
             }
         process.destroy()
-        val match = line?.let { FOREGROUND_PATTERN.find(it) } ?: return null
-        return match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() }
+        for (line in lines) {
+            AFFINITY_PATTERN.find(line)?.let { return it.groupValues[1] }
+            COMPONENT_PATTERN.find(line)?.let { return it.groupValues[1] }
+        }
+        return null
     }
 
     private fun releaseScreenOn() {
@@ -348,7 +354,8 @@ internal class SystemUiKeepAwakeMonitor(
         const val POLL_INTERVAL_MS = 700L
         const val FOREGROUND_POLL_MS = 1_000L
         const val ACTIVITY_DUMPSYS = "/system/bin/dumpsys activity activities"
-        val FOREGROUND_PATTERN = Regex("A=\\d+:([A-Za-z0-9_.]+)")
+        val AFFINITY_PATTERN = Regex("A=[0-9]+:([A-Za-z0-9_.]+)")
+        val COMPONENT_PATTERN = Regex("I=([A-Za-z0-9_.]+)")
         const val BUBBLE_AUTO_DISMISS_MS = 6_000L
         const val BUBBLE_SIZE_DP = 44
         const val BUBBLE_MARGIN_X_DP = 12
