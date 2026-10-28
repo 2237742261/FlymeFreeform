@@ -130,6 +130,13 @@ internal class ColorOsFreeformCoordinator(
                                 ModulePreferences.EXTRA_KEEP_AWAKE_ENABLED,
                                 configuration.snapshot.keepAwakeEnabled,
                             ),
+                        toolOrder =
+                            intent
+                                .getStringExtra(ModulePreferences.EXTRA_TOOL_ORDER)
+                                ?.split(',')
+                                ?.map { it.trim() }
+                                ?.filter { it.isNotEmpty() }
+                                ?: configuration.snapshot.toolOrder,
                     ),
                 )
             }
@@ -527,8 +534,7 @@ internal class ColorOsFreeformCoordinator(
                     if (generation == entryLaunchGeneration && overlay == null && isGestureEnvironmentAllowed()) {
                         entryCatalog.launch(target) {
                             generation == entryLaunchGeneration && overlay == null && isGestureEnvironmentAllowed() &&
-                                (target in lastSettings.pinnedTargets ||
-                                    target in lastSettings.innerPinnedTargets) && focusedWindow() === focus &&
+                                focusedWindow() === focus &&
                                 context.getSystemService(android.hardware.display.DisplayManager::class.java)
                                     .getDisplay(Display.DEFAULT_DISPLAY)?.rotation == rotation
                         }
@@ -556,7 +562,9 @@ internal class ColorOsFreeformCoordinator(
         morePanelActive = true
         activeEnvironmentApproved = false
         gestureEngine.cancel()
-        if (!sidebar.open(
+        // 自绘「更多」面板：不再拉起原生智能侧边栏（少一条跨进程 UI 链路）
+        showBuiltInMorePanel(view)
+        if (false && !sidebar.open(
                 beforeOpen = {
                     if (overlay === view && lastSettings.enabled && isGestureEnvironmentAllowed()) {
                         view.retainBackdropForPanel()

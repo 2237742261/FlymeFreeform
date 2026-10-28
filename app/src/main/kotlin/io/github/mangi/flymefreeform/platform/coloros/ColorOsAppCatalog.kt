@@ -30,10 +30,17 @@ internal data class RadialEntry(
     val badgeLeftOffsetFraction: Float = 0f,
 )
 
+/** 「更多」面板里按首字母分组的一栏。 */
+internal data class AppLetterGroup(val letter: String, val apps: List<RadialEntry>)
+
 internal data class AppCatalogSnapshot(
     val radialApps: List<RadialEntry> = emptyList(),
     val innerApps: List<RadialEntry> = emptyList(),
     val panelApps: List<RadialEntry> = emptyList(),
+    /** 「更多」面板首行的工具（已按用户自定义顺序排好）。 */
+    val tools: List<RadialEntry> = emptyList(),
+    /** 「更多」面板应用区（应用 + 分身，按首字母分组）。 */
+    val appGroups: List<AppLetterGroup> = emptyList(),
     val settings: ModuleSettingsSnapshot = ModuleSettingsSnapshot(),
 ) {
     fun matches(settings: ModuleSettingsSnapshot): Boolean =
@@ -105,6 +112,8 @@ internal class ColorOsAppCatalog(
                         radialApps = shapedOuter,
                         innerApps = shapedInner,
                         panelApps = content.panelApps,
+                        tools = content.tools,
+                        appGroups = content.appGroups,
                         settings = settings,
                     ),
                 )
@@ -152,6 +161,17 @@ internal class ColorOsAppCatalog(
                 identity = RadialEntry::target,
                 limit = ModulePreferences.MAX_INNER_PINNED_APPS,
             )
+        // 「更多」面板：工具行（按自定义顺序）+ 应用区（应用与分身按首字母分组）
+        val toolEntries =
+            nativeEntries.filter {
+                (it.target as? PinnedTarget.Sidebar)?.kind == PinnedTarget.Kind.Tool
+            }
+        val cloneEntries =
+            nativeEntries.filter {
+                (it.target as? PinnedTarget.Sidebar)?.kind == PinnedTarget.Kind.CloneApp
+            }
+        val orderedTools = orderTools(toolEntries, settings.toolOrder)
+        val appGroups = groupByLetter(entries + cloneEntries, collator)
         val excluded = (outerApps + innerApps).mapTo(HashSet(), RadialEntry::target)
         val panel =
             AppSelectionPolicy.panelItems(
@@ -178,7 +198,16 @@ internal class ColorOsAppCatalog(
             }
         }.toMap()
         panel.forEach { it.icon.prepareToDraw() }
-        return CatalogContent(revision, settings, outerApps, innerApps, panel, sources)
+        return CatalogContent(
+            revision = revision,
+            settings = settings,
+            radialApps = outerApps,
+            innerApps = innerApps,
+            panelApps = panel,
+            radialSources = sources,
+            tools = orderedTools,
+            appGroups = appGroups,
+        )
     }
 
     private data class CatalogContent(
@@ -188,7 +217,50 @@ internal class ColorOsAppCatalog(
         val innerApps: List<RadialEntry>,
         val panelApps: List<RadialEntry>,
         val radialSources: Map<PinnedTarget, Drawable>,
+        val tools: List<RadialEntry>,
+        val appGroups: List<AppLetterGroup>,
     )
+
+    /** 工具行顺序：先按用户配置的 alias 顺序，未配置的按名称排在后面。 */
+    private fun orderTools(tools: List<RadialEntry>, order: List<String>): List<RadialEntry> {
+        if (tools.isEmpty()) return emptyList()
+        if (order.isEmpty()) return tools.sortedBy { it.label }
+        val byAlias =
+            tools.associateBy { (it.target as? PinnedTarget.Sidebar)?.alias.orEmpty() }
+        val ordered = order.mapNotNull { byAlias[it] }
+        val rest =
+            tools
+                .filter { (it.target as? PinnedTarget.Sidebar)?.alias.orEmpty() !in order }
+                .sortedBy { it.label }
+        return (ordered + rest).distinctBy(RadialEntry::target)
+    }
+
+    /** 应用区：应用 + 分身混排，按首字母分组（非 A-Z 归 #，排在最后）。 */
+    private fun groupByLetter(apps: List<RadialEntry>, collator: Collator): List<AppLetterGroup> {
+        val sorted =
+            apps.distinctBy(RadialEntry::target)
+                .sortedWith { first, second -> collator.compare(first.label, second.label) }
+        val groups = LinkedHashMap<String, MutableList<RadialEntry>>()
+        sorted.forEach { entry ->
+            groups.getOrPut(letterOf(entry.label)) { mutableListOf() } += entry
+        }
+        return groups.entries
+            .sortedWith { first, second -> compareLetters(first.key, second.key) }
+            .map { AppLetterGroup(it.key, it.value) }
+    }
+
+    private fun letterOf(label: String): String {
+        val first = label.trim().firstOrNull() ?: return "#"
+        val upper = first.uppercaseChar()
+        return if (upper in 'A'..'Z') upper.toString() else "#"
+    }
+
+    private fun compareLetters(first: String, second: String): Int =
+        when {
+            first == "#" -> if (second == "#") 0 else 1
+            second == "#" -> -1
+            else -> first.compareTo(second)
+        }
 
     /** 在目录工作线程测量可见范围；左侧只平移角标，避免翻转其中的数字。 */
     private fun Bitmap.leftOffsetFraction(): Float {

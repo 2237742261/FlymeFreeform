@@ -13,6 +13,7 @@ internal object ModulePreferences {
     const val EXTRA_RADIAL_VIBRATE_ENABLED = "radial_vibrate_enabled"
     const val EXTRA_RADIAL_VIBRATE_STRENGTH = "radial_vibrate_strength"
     const val EXTRA_KEEP_AWAKE_ENABLED = "keep_awake_enabled"
+    const val EXTRA_TOOL_ORDER = "tool_order"
     const val KEY_MODULE_ENABLED = "enabled"
     const val KEY_LEFT_CORNER_ENABLED = "corner_left_enabled"
     const val KEY_RIGHT_CORNER_ENABLED = "corner_right_enabled"
@@ -24,6 +25,9 @@ internal object ModulePreferences {
     const val KEY_OUTSIDE_TAP_CLOSE_MODE = "outside_tap_close_mode_v1"
     const val KEY_HANDLE_SWIPE_UP_TO_MINI_ENABLED = "handle_swipe_up_to_mini_enabled_v2"
     const val KEY_KEEP_AWAKE_ENABLED = "keep_awake_enabled_v1"
+
+    /** 工具栏（「更多」面板首行）里工具的显示顺序，逗号分隔的侧边栏 alias。 */
+    const val KEY_TOOL_ORDER = "tool_order_v1"
 
     /** 轮盘震动：手指滑到应用图标上给一次触感。 */
     const val KEY_RADIAL_VIBRATE_ENABLED = "radial_vibrate_enabled_v1"

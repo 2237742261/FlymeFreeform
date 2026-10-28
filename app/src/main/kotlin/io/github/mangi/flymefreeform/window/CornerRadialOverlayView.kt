@@ -15,10 +15,12 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,17 +30,25 @@ import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
@@ -59,8 +69,12 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.AbstractComposeView
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
@@ -185,7 +199,9 @@ internal class CornerRadialOverlayView(
         latestY = y
         radialImages.value = catalog.radialApps.map(::RadialImage)
         innerImages.value = catalog.innerApps.map(::RadialImage)
-        panelImages = catalog.panelApps.associate { entry -> entry.target to entry.icon.asImageBitmap() }
+        panelImages =
+            (catalog.panelApps + catalog.tools + catalog.appGroups.flatMap { it.apps })
+                .associate { entry -> entry.target to entry.icon.asImageBitmap() }
         selectedIndex = null
         selectedIndexState.intValue = NO_SELECTION
         handoffEntryProgress.floatValue = 0f
@@ -711,8 +727,10 @@ internal class CornerRadialOverlayView(
     ) {
         val density = androidx.compose.ui.platform.LocalDensity.current
         val squircleEnabled = isSquircleEnabled()
-        val panelColor = MiuixTheme.colorScheme.surface.copy(alpha = PANEL_SURFACE_ALPHA)
-        val labelColor = MiuixTheme.colorScheme.onSurface
+        // 用户 2026-10-28 指定：白底、深色文字（不跟随深色主题）
+        val panelColor = Color.White
+        val labelColor = Color(0xFF1A1A1A)
+        val sectionColor = Color(0xFF7A7A7A)
         val bounds = metrics.bounds
         val width = with(density) { bounds.width.toDp() }
         val height = with(density) { bounds.height.toDp() }
@@ -723,6 +741,24 @@ internal class CornerRadialOverlayView(
         val iconSize = with(density) { metrics.iconDiameter.toDp() }
         val labelGap = with(density) { (metrics.labelTopOffset - metrics.iconDiameter / 2f).toDp() }
         val labelSize = with(density) { metrics.labelTextSize.toSp() }
+
+        val gridState = rememberLazyGridState()
+        val scope = rememberCoroutineScope()
+        var toolsExpanded by remember { mutableStateOf(false) }
+        val tools = catalog.tools
+        val showToggle = tools.size > TOOL_STRIP_FIXED_COUNT
+        val visibleTools =
+            if (toolsExpanded) tools else tools.take(TOOL_STRIP_FIXED_COUNT)
+        // 索引跳转要用：每个分组 = 1 个字母头 + N 个格子
+        val groupOffsets =
+            remember(catalog.appGroups) {
+                var index = 0
+                catalog.appGroups.map { group ->
+                    val start = index
+                    index += 1 + group.apps.size
+                    group.letter to start
+                }.toMap()
+            }
 
         Box(
             modifier =
@@ -747,8 +783,7 @@ internal class CornerRadialOverlayView(
                         }
                     },
         ) {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(metrics.columns),
+            Column(
                 modifier =
                     Modifier
                         .fillMaxSize()
@@ -766,49 +801,227 @@ internal class CornerRadialOverlayView(
                                     PANEL_CONTENT_TRANSLATION_FRACTION
                             compositingStrategy = CompositingStrategy.ModulateAlpha
                         },
-                contentPadding =
-                    PaddingValues(
-                        horizontal = horizontalPadding,
-                        vertical = verticalPadding,
-                    ),
-                verticalArrangement = Arrangement.Top,
-                userScrollEnabled = inputEnabled,
             ) {
-                items(
-                    items = catalog.panelApps,
-                    key = { entry -> io.github.mangi.flymefreeform.config.PinnedTargetCodec.encode(entry.target) },
-                ) { entry ->
-                    Column(
+                if (tools.isNotEmpty()) {
+                    Row(
                         modifier =
                             Modifier
                                 .fillMaxWidth()
-                                .height(cellHeight)
-                                .clickable(enabled = inputEnabled) {
-                                    listener.onEntryCommitted(entry)
-                                },
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                                .padding(start = horizontalPadding, end = horizontalPadding, top = 6.dp),
+                        horizontalArrangement = Arrangement.Start,
                     ) {
-                        panelImages[entry.target]?.let { image ->
-                            Image(
-                                bitmap = image,
-                                contentDescription = null,
-                                modifier = Modifier.size(iconSize),
-                                filterQuality = FilterQuality.High,
+                        visibleTools.forEach { entry ->
+                            PanelCell(
+                                entry = entry,
+                                images = panelImages,
+                                iconSize = iconSize,
+                                labelSize = labelSize,
+                                labelColor = labelColor,
+                                labelGap = labelGap,
+                                cellHeight = cellHeight,
+                                inputEnabled = inputEnabled,
+                                onEntry = listener::onEntryCommitted,
+                                modifier = Modifier.weight(1f),
                             )
                         }
-                        Spacer(modifier = Modifier.height(labelGap))
-                        Text(
-                            text = entry.label,
-                            modifier = Modifier.fillMaxWidth(),
-                            color = labelColor,
-                            fontSize = labelSize,
-                            letterSpacing = 0.sp,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                        if (showToggle) {
+                            ToolStripToggle(
+                                expanded = toolsExpanded,
+                                iconSize = iconSize,
+                                labelSize = labelSize,
+                                labelColor = labelColor,
+                                cellHeight = cellHeight,
+                                inputEnabled = inputEnabled,
+                                onToggle = { toolsExpanded = !toolsExpanded },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        repeat((TOOL_STRIP_SLOTS - visibleTools.size - if (showToggle) 1 else 0).coerceAtLeast(0)) {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+
+                Box(modifier = Modifier.weight(1f)) {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(APP_GRID_COLUMNS),
+                        state = gridState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding =
+                            PaddingValues(
+                                start = horizontalPadding,
+                                end = horizontalPadding,
+                                top = 2.dp,
+                                bottom = verticalPadding,
+                            ),
+                        verticalArrangement = Arrangement.Top,
+                        userScrollEnabled = inputEnabled,
+                    ) {
+                        catalog.appGroups.forEach { group ->
+                            item(
+                                key = "header_" + group.letter,
+                                span = { GridItemSpan(APP_GRID_COLUMNS) },
+                            ) {
+                                Text(
+                                    text = group.letter,
+                                    modifier = Modifier.fillMaxWidth().padding(start = 2.dp, top = 6.dp, bottom = 2.dp),
+                                    color = sectionColor,
+                                    fontSize = labelSize * 0.85f,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                )
+                            }
+                            items(
+                                items = group.apps,
+                                key = { entry -> io.github.mangi.flymefreeform.config.PinnedTargetCodec.encode(entry.target) },
+                            ) { entry ->
+                                PanelCell(
+                                    entry = entry,
+                                    images = panelImages,
+                                    iconSize = iconSize,
+                                    labelSize = labelSize,
+                                    labelColor = labelColor,
+                                    labelGap = labelGap,
+                                    cellHeight = cellHeight,
+                                    inputEnabled = inputEnabled,
+                                    onEntry = listener::onEntryCommitted,
+                                )
+                            }
+                        }
+                    }
+                    if (groupOffsets.size > 1) {
+                        LetterIndexBar(
+                            letters = catalog.appGroups.map { it.letter },
+                            color = sectionColor,
+                            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 2.dp),
+                            onLetter = { letter ->
+                                val target = groupOffsets[letter]
+                                if (target != null) {
+                                    scope.launch { gridState.scrollToItem(target) }
+                                }
+                            },
                         )
                     }
                 }
+            }
+        }
+    }
+
+    @Composable
+    private fun PanelCell(
+        entry: RadialEntry,
+        images: Map<io.github.mangi.flymefreeform.config.PinnedTarget, ImageBitmap>,
+        iconSize: androidx.compose.ui.unit.Dp,
+        labelSize: androidx.compose.ui.unit.TextUnit,
+        labelColor: Color,
+        labelGap: androidx.compose.ui.unit.Dp,
+        cellHeight: androidx.compose.ui.unit.Dp,
+        inputEnabled: Boolean,
+        onEntry: (RadialEntry) -> Unit,
+        modifier: Modifier = Modifier,
+    ) {
+        Column(
+            modifier =
+                modifier
+                    .height(cellHeight)
+                    .clickable(enabled = inputEnabled) { onEntry(entry) },
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            images[entry.target]?.let { image ->
+                Image(
+                    bitmap = image,
+                    contentDescription = null,
+                    modifier = Modifier.size(iconSize),
+                    filterQuality = FilterQuality.High,
+                )
+            }
+            Spacer(modifier = Modifier.height(labelGap))
+            Text(
+                text = entry.label,
+                modifier = Modifier.fillMaxWidth(),
+                color = labelColor,
+                fontSize = labelSize,
+                letterSpacing = 0.sp,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+
+    @Composable
+    private fun ToolStripToggle(
+        expanded: Boolean,
+        iconSize: androidx.compose.ui.unit.Dp,
+        labelSize: androidx.compose.ui.unit.TextUnit,
+        labelColor: Color,
+        cellHeight: androidx.compose.ui.unit.Dp,
+        inputEnabled: Boolean,
+        onToggle: () -> Unit,
+        modifier: Modifier = Modifier,
+    ) {
+        Column(
+            modifier =
+                modifier
+                    .height(cellHeight)
+                    .clickable(enabled = inputEnabled) { onToggle() },
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(
+                modifier =
+                    Modifier
+                        .size(iconSize)
+                        .background(
+                            color = MiuixTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(percent = 50),
+                        ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = if (expanded) "\u2212" else "\u22ef",
+                    color = labelColor,
+                    fontSize = labelSize * 1.2f,
+                    maxLines = 1,
+                )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = if (expanded) "收起" else "展开",
+                modifier = Modifier.fillMaxWidth(),
+                color = labelColor,
+                fontSize = labelSize,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+            )
+        }
+    }
+
+    @Composable
+    private fun LetterIndexBar(
+        letters: List<String>,
+        color: Color,
+        modifier: Modifier = Modifier,
+        onLetter: (String) -> Unit,
+    ) {
+        Column(
+            modifier = modifier,
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            letters.forEach { letter ->
+                Text(
+                    text = letter,
+                    modifier =
+                        Modifier
+                            .padding(vertical = 1.dp)
+                            .clickable { onLetter(letter) }
+                            .padding(horizontal = 3.dp),
+                    color = color,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                )
             }
         }
     }
@@ -1155,6 +1368,9 @@ internal class CornerRadialOverlayView(
         const val PANEL_CONTENT_TRANSLATION_FRACTION = 0.12f
         const val TICK_INTERVAL_MS = 80L
         const val VIBRATE_MIN_INTERVAL_MS = 70L
+        const val TOOL_STRIP_FIXED_COUNT = 4
+        const val TOOL_STRIP_SLOTS = 5
+        const val APP_GRID_COLUMNS = 5
         const val GESTURE_TIMEOUT_MS = 5_000L
         const val PANEL_TIMEOUT_MS = 15_000L
         const val DISMISS_FALLBACK_GRACE_MS = 260L

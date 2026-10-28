@@ -225,14 +225,13 @@ internal class ColorOsSidebarEntryEndpoint(
 
     private fun launchAllowed(target: PinnedTarget.Sidebar): Boolean {
         val snapshot = configuration.snapshot
-        val pinned =
-            target in snapshot.pinnedTargets || target in snapshot.innerPinnedTargets
-        val ok = allowed() && target.userId == (Process.myUid() / 100_000) && snapshot.enabled && pinned
+        // 面板里的工具未必固定在轮盘上，这里不再要求它在固定项里。
+        val ok = allowed() && target.userId == (Process.myUid() / 100_000) && snapshot.enabled
         if (!ok) {
             log(
                 Log.WARN,
                 "SIDEBAR_LAUNCH_BLOCKED allowed=${allowed()} user=${target.userId}" +
-                    " enabled=${snapshot.enabled} pinned=$pinned",
+                    " enabled=${snapshot.enabled}",
                 null,
             )
         }

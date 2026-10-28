@@ -99,34 +99,26 @@ internal object AdaptiveOverlayGeometry {
 
         val outerMargin = plateDiameter * OUTER_MARGIN_FRACTION
         val requestedContentHorizontalPadding = plateDiameter * PANEL_HORIZONTAL_PADDING_FRACTION
-        val labelTextSize = plateDiameter * PANEL_LABEL_FRACTION * fontScale.coerceAtLeast(0.1f)
-        val horizontalTextPadding = labelTextSize * PANEL_LABEL_HORIZONTAL_PADDING_FRACTION
-        val panelIconDiameter = plateDiameter * PANEL_ICON_FRACTION
-        val minimumCellWidth =
-            max(
-                panelIconDiameter * PANEL_ICON_CELL_FRACTION,
-                labelTextSize * PANEL_LABEL_CELL_FRACTION,
-            )
+        // 「更多」面板：固定 5 列、约占屏宽 80%、高 72%，靠右（索引条在面板右缘内侧）
         val availablePanelWidth = (safeWidth - outerMargin * 2).coerceAtLeast(1f)
-        val widthBudget =
-            min(
-                availablePanelWidth,
-                max(minimumCellWidth, panelReferenceRadius * PANEL_RADIUS_WIDTH_FRACTION),
-            )
+        val availablePanelHeight = (safeHeight - outerMargin * 2).coerceAtLeast(1f)
+        val columns = PANEL_COLUMNS
+        val panelWidth =
+            min(availablePanelWidth, safeWidth * PANEL_WIDTH_FRACTION).coerceAtLeast(1f)
         val contentHorizontalPadding =
             min(
                 requestedContentHorizontalPadding,
-                widthBudget * PANEL_MAX_CONTENT_HORIZONTAL_PADDING_FRACTION,
+                panelWidth * PANEL_MAX_CONTENT_HORIZONTAL_PADDING_FRACTION,
             )
-        val maximumColumns =
-            floor((widthBudget - contentHorizontalPadding * 2) / minimumCellWidth)
-                .toInt()
-                .coerceAtLeast(1)
-        val columns = min(panelItemCount.coerceAtLeast(1), maximumColumns)
-        val naturalPanelWidth = minimumCellWidth * columns + contentHorizontalPadding * 2
-        val panelWidth =
-            if (panelItemCount > columns) widthBudget else min(widthBudget, naturalPanelWidth)
-
+        val cellWidth =
+            ((panelWidth - contentHorizontalPadding * 2) / columns).coerceAtLeast(1f)
+        val panelIconDiameter =
+            min(plateDiameter * PANEL_ICON_FRACTION, cellWidth * PANEL_MAX_ICON_CELL_RATIO)
+                .coerceAtLeast(1f)
+        val labelTextSize =
+            min(plateDiameter * PANEL_LABEL_FRACTION, cellWidth * PANEL_MAX_LABEL_CELL_RATIO) *
+                fontScale.coerceAtLeast(0.1f)
+        val horizontalTextPadding = labelTextSize * PANEL_LABEL_HORIZONTAL_PADDING_FRACTION
         val labelGap = labelTextSize * PANEL_LABEL_GAP_FRACTION
         val labelLineHeight = labelTextSize * PANEL_LABEL_LINE_HEIGHT_FRACTION
         val cellHeight =
@@ -135,16 +127,9 @@ internal object AdaptiveOverlayGeometry {
                 panelIconDiameter + labelLineHeight + labelGap,
             )
         val verticalPadding = cellHeight * PANEL_VERTICAL_PADDING_FRACTION
-        val rows = ceil(panelItemCount / columns.toFloat()).toInt().coerceAtLeast(1)
-        val naturalPanelHeight = rows * cellHeight + verticalPadding * 2
-        val availablePanelHeight = (safeHeight - outerMargin * 2).coerceAtLeast(1f)
-        val minimumUsefulHeight = min(availablePanelHeight, cellHeight + verticalPadding * 2)
-        val heightBudget =
-            max(
-                minimumUsefulHeight,
-                min(availablePanelHeight, panelReferenceRadius * PANEL_RADIUS_HEIGHT_FRACTION),
-            )
-        val panelHeight = min(naturalPanelHeight, heightBudget)
+        val panelHeight =
+            min(availablePanelHeight, safeHeight * PANEL_HEIGHT_FRACTION).coerceAtLeast(1f)
+        val naturalPanelHeight = panelHeight
         val left =
             if (anchorOnLeft) {
                 safeInsets.left + outerMargin
@@ -175,6 +160,11 @@ internal object AdaptiveOverlayGeometry {
     }
 
     private const val FALLBACK_ICON_FRACTION = 0.13f
+    private const val PANEL_COLUMNS = 5
+    private const val PANEL_WIDTH_FRACTION = 0.80f
+    private const val PANEL_HEIGHT_FRACTION = 0.72f
+    private const val PANEL_MAX_ICON_CELL_RATIO = 0.62f
+    private const val PANEL_MAX_LABEL_CELL_RATIO = 0.26f
     private const val PANEL_BASE_ICON_FRACTION = 0.66f
     private const val PANEL_BASE_MIN_FRACTION = 0.07f
     private const val PANEL_BASE_MAX_FRACTION = 0.10f

@@ -70,6 +70,9 @@ internal class FrameworkConnectionRepository(private val context: Context) {
     fun setOutsideTapCloseMode(mode: OutsideTapCloseMode) =
         updateSettings { it.copy(outsideTapCloseMode = mode) }
 
+    fun setToolOrder(aliases: List<String>) =
+        updateSettings { it.copy(toolOrder = aliases.distinct()) }
+
     fun setRadialVibrateEnabled(enabled: Boolean) =
         updateSettings { it.copy(radialVibrateEnabled = enabled) }
 
@@ -158,7 +161,8 @@ internal class FrameworkConnectionRepository(private val context: Context) {
                     next.innerPinnedTargets != previous.settings.innerPinnedTargets ||
                     next.radialVibrateEnabled != previous.settings.radialVibrateEnabled ||
                     next.radialVibrateStrength != previous.settings.radialVibrateStrength ||
-                    next.keepAwakeEnabled != previous.settings.keepAwakeEnabled
+                    next.keepAwakeEnabled != previous.settings.keepAwakeEnabled ||
+                    next.toolOrder != previous.settings.toolOrder
                 ) {
                     notifyPinnedTargetsChanged(next)
                 }
@@ -193,6 +197,7 @@ internal class FrameworkConnectionRepository(private val context: Context) {
                 settings.radialVibrateStrength,
             )
             putExtra(ModulePreferences.EXTRA_KEEP_AWAKE_ENABLED, settings.keepAwakeEnabled)
+            putExtra(ModulePreferences.EXTRA_TOOL_ORDER, settings.toolOrder.joinToString(","))
         }
         try {
             context.sendBroadcast(intent.setPackage("android"))
