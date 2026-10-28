@@ -215,7 +215,10 @@ internal class OutsideTapCloseHookInstaller(
                     onFailure("OUTSIDE_TAP_REGION_REFRESH_FAILED", exception)
                 }
             }
-            if (!environmentAllowed() || !settings.enabled || settings.outsideTapCloseMode == OutsideTapCloseMode.Disabled) {
+            val outsideModeActive =
+                settings.outsideTapCloseMode == OutsideTapCloseMode.SingleTap ||
+                    settings.outsideTapCloseMode == OutsideTapCloseMode.DoubleTap
+            if (!environmentAllowed() || !settings.enabled || !outsideModeActive) {
                 synchronized(protectedTasks) { protectedTasks.clear() }
             }
         }
@@ -233,6 +236,10 @@ internal class OutsideTapCloseHookInstaller(
                 else OutsideTapCloseMode.Disabled
             if (
                 mode == OutsideTapCloseMode.Disabled ||
+                    // 「双击小横条」模式只认横条自己的 onDoubleTap：
+                    // 一旦把 caption 的触控区域扩到整块空白区，双击空白也会落到 caption 上被当成关闭
+                    // （用户 2026-10-29 报的「两种都能关」就是这个原因）。
+                    mode == OutsideTapCloseMode.CaptionDoubleTap ||
                     !isOrdinaryZoom(controller, task) ||
                     hasMenuShowing.invokeUnwrapped(controller) == true
             ) {

@@ -1,8 +1,12 @@
 package io.github.mangi.flymefreeform.hook
 
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -12,6 +16,7 @@ import android.view.MotionEvent
 import android.view.ViewConfiguration
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
+import io.github.mangi.flymefreeform.config.ModulePreferences
 import io.github.mangi.flymefreeform.gesture.AdaptiveCornerGestureConfig
 import io.github.mangi.flymefreeform.gesture.CornerGestureConfig
 import io.github.mangi.flymefreeform.gesture.CornerGestureEngine
@@ -239,8 +244,39 @@ internal class LauncherHookInstaller(
             configuration.observe {
                 mainHandler.post { if (!environmentState.isGestureAllowed()) cancelClaim() }
             }
+            registerSettingsReceiver(owner)
         }
         if (Looper.myLooper() == Looper.getMainLooper()) start() else mainHandler.post { start() }
+    }
+
+    /**
+     * 桌面进程也要收设置推送：角落开关 / 触发范围改完要立刻生效，
+     * 以前这里没有接收器，只能杀 launcher 或重启手机。
+     */
+    private fun registerSettingsReceiver(owner: Context) {
+        try {
+            val receiver =
+                object : BroadcastReceiver() {
+                    override fun onReceive(context: Context?, intent: Intent?) {
+                        configuration.applySettingsBroadcast(intent ?: return)
+                    }
+                }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                owner.registerReceiver(
+                    receiver,
+                    IntentFilter(ModulePreferences.ACTION_PINNED_TARGETS_CHANGED),
+                    Context.RECEIVER_EXPORTED,
+                )
+            } else {
+                owner.registerReceiver(
+                    receiver,
+                    IntentFilter(ModulePreferences.ACTION_PINNED_TARGETS_CHANGED),
+                )
+            }
+            module.log(Log.INFO, TAG, "LAUNCHER_SETTINGS_RECEIVER_READY")
+        } catch (exception: RuntimeException) {
+            module.log(Log.WARN, TAG, "LAUNCHER_SETTINGS_RECEIVER_FAILED", exception)
+        }
     }
 
     private fun cancelClaim() {

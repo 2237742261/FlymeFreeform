@@ -88,33 +88,7 @@ internal class ColorOsFreeformCoordinator(
                 if (intent?.action != ModulePreferences.ACTION_PINNED_TARGETS_CHANGED ||
                     sentFromUid != moduleUid()
                 ) return
-                val encoded = intent.getStringExtra(ModulePreferences.EXTRA_PINNED_TARGETS) ?: return
-                val targets =
-                    PinnedTargetCodec.decodeList(encoded, ModulePreferences.MAX_OUTER_PINNED_APPS)
-                val innerTargets =
-                    PinnedTargetCodec.decodeList(
-                        intent.getStringExtra(ModulePreferences.EXTRA_INNER_PINNED_TARGETS).orEmpty(),
-                        ModulePreferences.MAX_INNER_PINNED_APPS,
-                    )
-                configuration.override(
-                    configuration.snapshot.copy(
-                        enabled = intent.getBooleanExtra(
-                            ModulePreferences.EXTRA_MODULE_ENABLED,
-                            configuration.snapshot.enabled,
-                        ),
-                        pinsSaved = intent.getBooleanExtra(
-                            ModulePreferences.EXTRA_PINS_SAVED,
-                            configuration.snapshot.pinsSaved,
-                        ),
-                        pinnedTargets = targets,
-                        innerPinnedTargets = innerTargets,
-                        innerPinsSaved =
-                            intent.getBooleanExtra(
-                                ModulePreferences.EXTRA_INNER_PINS_SAVED,
-                                configuration.snapshot.innerPinsSaved,
-                            ),
-                    ),
-                )
+                configuration.applySettingsBroadcast(intent)
             }
         }
 
@@ -127,7 +101,12 @@ internal class ColorOsFreeformCoordinator(
     private var pointerGeneration = 0L
     private var overlay: CornerRadialOverlayView? = null
     private var morePanelActive = false
+    /** 面板模式下窗口/面板占用的屏幕矩形；用于判断「点到面板外」。 */
+    private var morePanelBounds: android.graphics.Rect? = null
     private var lastSettings = ModuleSettingsSnapshot(enabled = false)
+    /** Settings.Global 里持久化的工具顺序；非空时优先于 App 推送的 toolOrder。 */
+    @Volatile
+    private var persistentToolOrder: List<String> = emptyList()
     private var activeEnvironmentApproved = false
     private var activeGestureConfig: CornerGestureConfig? = null
     private val pointerQueueLock = Any()
@@ -138,6 +117,18 @@ internal class ColorOsFreeformCoordinator(
 
     fun start() {
         handler.post {
+            persistentToolOrder =
+                readToolOrderFromFile().ifEmpty { readToolOrderFromSettings() }
+            if (persistentToolOrder.isNotEmpty()) {
+                logger(
+                    Log.INFO,
+                    "TOOL_ORDER_RESTORED count=" + persistentToolOrder.size,
+                    null,
+                )
+                configuration.override(
+                    configuration.snapshot.copy(toolOrder = persistentToolOrder),
+                )
+            }
             entryCatalog.start()
             environmentState.start(context)
             environmentState.observe { applySettings(configuration.snapshot) }
@@ -179,6 +170,98 @@ internal class ColorOsFreeformCoordinator(
         }
     }
 
+    /**
+     * 面板里拖动排序后：把新顺序发给 App 落盘。
+     * 进程内 RemotePreferences 是只读实现（edit() 直接抛 UnsupportedOperationException），
+     * 写入只能由 App 进程做；App 侧用**清单静态注册**的接收器，进程不在也能被拉起。
+     */
+    private fun publishToolOrder(aliases: List<String>) {
+        val ordered = aliases.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (ordered.isEmpty()) return
+        // 先在 system_server 内存里生效：即使 App 落盘慢一步，面板/目录也立刻用新顺序，
+        // 不会出现「收起后恢复原状」的观感。
+        configuration.override(configuration.snapshot.copy(toolOrder = ordered))
+        // 持久化真值写进 Settings.Global：system_server 自己能读回，重启也不丢。
+        val writtenSettings = writeToolOrderToSettings(ordered)
+        val writtenFile = writeToolOrderToFile(ordered)
+        val written = writtenSettings || writtenFile
+        if (written) persistentToolOrder = ordered
+        try {
+            context.sendBroadcast(
+                Intent(ModulePreferences.ACTION_TOOL_ORDER_CHANGED)
+                    .setPackage(SidebarEntryProtocol.MODULE_PACKAGE)
+                    .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+                    .putExtra(ModulePreferences.EXTRA_TOOL_ORDER, ordered.joinToString(",")),
+            )
+            logger(
+                Log.INFO,
+                "TOOL_ORDER_PUBLISHED count=" + ordered.size + " head=" + ordered.first() +
+                    " settings=" + written,
+                null,
+            )
+        } catch (exception: RuntimeException) {
+            logger(Log.WARN, "TOOL_ORDER_PUBLISH_FAILED", exception)
+        }
+    }
+
+    /** 兜底通道：system_server 对 /data/system 有写权限，文件不依赖 SettingsProvider。 */
+    private val toolOrderFile = java.io.File("/data/system/flyme_freeform_tool_order.txt")
+
+    private fun writeToolOrderToFile(ordered: List<String>): Boolean =
+        try {
+            toolOrderFile.writeText(ordered.joinToString(","))
+            true
+        } catch (exception: RuntimeException) {
+            logger(Log.WARN, "TOOL_ORDER_FILE_WRITE_FAILED", exception)
+            false
+        }
+
+    private fun readToolOrderFromFile(): List<String> =
+        try {
+            if (!toolOrderFile.exists()) {
+                emptyList()
+            } else {
+                toolOrderFile
+                    .readText()
+                    .trim()
+                    .split(',')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+            }
+        } catch (exception: RuntimeException) {
+            logger(Log.WARN, "TOOL_ORDER_FILE_READ_FAILED", exception)
+            emptyList()
+        }
+
+    private fun writeToolOrderToSettings(ordered: List<String>): Boolean =
+        try {
+            android.provider.Settings.Global.putString(
+                context.contentResolver,
+                ModulePreferences.GLOBAL_KEY_TOOL_ORDER,
+                ordered.joinToString(","),
+            )
+        } catch (exception: RuntimeException) {
+            logger(Log.WARN, "TOOL_ORDER_SETTINGS_WRITE_FAILED", exception)
+            false
+        }
+
+    /** 读回持久化的顺序；没有就返回空表。 */
+    private fun readToolOrderFromSettings(): List<String> =
+        try {
+            android.provider.Settings.Global
+                .getString(
+                    context.contentResolver,
+                    ModulePreferences.GLOBAL_KEY_TOOL_ORDER,
+                )
+                ?.split(',')
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?: emptyList()
+        } catch (exception: RuntimeException) {
+            logger(Log.WARN, "TOOL_ORDER_SETTINGS_READ_FAILED", exception)
+            emptyList()
+        }
+
     private fun moduleUid(): Int = try {
         context.packageManager.getApplicationInfo(
             SidebarEntryProtocol.MODULE_PACKAGE,
@@ -188,12 +271,19 @@ internal class ColorOsFreeformCoordinator(
         -1
     }
 
-    private fun applySettings(settings: ModuleSettingsSnapshot) {
+    private fun applySettings(incoming: ModuleSettingsSnapshot) {
+        // 排序的真值在 Settings.Global（见 publishToolOrder）：App 推来的 toolOrder 可能是旧值，
+        // 这里以持久化的顺序为准，避免把用户刚调好的顺序覆盖回旧顺序。
+        val settings =
+            if (persistentToolOrder.isNotEmpty() && incoming.toolOrder != persistentToolOrder)
+                incoming.copy(toolOrder = persistentToolOrder)
+            else incoming
         val selectionChanged =
             settings.pinsSaved != lastSettings.pinsSaved ||
                 settings.pinnedTargets != lastSettings.pinnedTargets ||
                 settings.innerPinsSaved != lastSettings.innerPinsSaved ||
-                settings.innerPinnedTargets != lastSettings.innerPinnedTargets
+                settings.innerPinnedTargets != lastSettings.innerPinnedTargets ||
+                settings.toolOrder != lastSettings.toolOrder
         lastSettings = settings
         if (environmentState.isGestureAllowed(refreshKeyguard = true) && (settings.leftCornerEnabled || settings.rightCornerEnabled)) {
             val resuming = !pointerRegistered
@@ -303,6 +393,15 @@ internal class ColorOsFreeformCoordinator(
             if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                 entryLaunchGeneration++
                 entryCatalog.cancelLaunch()
+                // 面板窗口只覆盖面板本身，面板外的点击由这里兜：点到外面就关掉面板
+                val panel = morePanelBounds
+                if (morePanelActive && panel != null &&
+                    !panel.contains(event.rawX.toInt(), event.rawY.toInt())
+                ) {
+                    logger(Log.DEBUG, "MORE_PANEL_OUTSIDE_TAP", null)
+                    removeOverlay()
+                    return
+                }
             }
             handlePointerEvent(event)
             if (!shouldKeepPointerStream()) {
@@ -510,8 +609,7 @@ internal class ColorOsFreeformCoordinator(
                     if (generation == entryLaunchGeneration && overlay == null && isGestureEnvironmentAllowed()) {
                         entryCatalog.launch(target) {
                             generation == entryLaunchGeneration && overlay == null && isGestureEnvironmentAllowed() &&
-                                (target in lastSettings.pinnedTargets ||
-                                    target in lastSettings.innerPinnedTargets) && focusedWindow() === focus &&
+                                focusedWindow() === focus &&
                                 context.getSystemService(android.hardware.display.DisplayManager::class.java)
                                     .getDisplay(Display.DEFAULT_DISPLAY)?.rotation == rotation
                         }
@@ -530,6 +628,11 @@ internal class ColorOsFreeformCoordinator(
         }
     }
 
+    override fun onToolOrderChanged(aliases: List<String>) {
+        if (aliases.isEmpty()) return
+        publishToolOrder(aliases)
+    }
+
     override fun onMorePanelRequested() {
         if (!isGestureEnvironmentAllowed()) {
             removeOverlay()
@@ -539,38 +642,33 @@ internal class ColorOsFreeformCoordinator(
         morePanelActive = true
         activeEnvironmentApproved = false
         gestureEngine.cancel()
-        if (!sidebar.open(
-                beforeOpen = {
-                    if (overlay === view && lastSettings.enabled && isGestureEnvironmentAllowed()) {
-                        view.retainBackdropForPanel()
-                        true
-                    } else false
-                },
-                onResult = { result ->
-                    if (overlay === view) {
-                        if (result == ColorOsSidebarClient.Outcome.Fallback && lastSettings.enabled && isGestureEnvironmentAllowed() &&
-                            context.getSystemService(android.os.UserManager::class.java)?.isUserForeground == true
-                        ) {
-                            view.visibility = android.view.View.VISIBLE
-                            showBuiltInMorePanel(view)
-                        } else if (result != ColorOsSidebarClient.Outcome.Shown) removeOverlay()
-                    }
-                },
-                onExitStarted = { if (overlay === view) view.beginBackdropExit() },
-                onHideBackdrop = { hidden ->
-                    if (overlay === view) view.hideBackdropAfterFrame(hidden) else hidden()
-                },
-                onClosed = { if (overlay === view) removeOverlay() },
-            )
-        ) removeOverlay()
+        // 自绘「更多」面板：完全不碰原生侧边栏的 UI 链路
+        showBuiltInMorePanel(view)
     }
 
     private fun showBuiltInMorePanel(view: CornerRadialOverlayView) {
         val params = createOverlayParams(focusable = true)
+        // 面板模式把窗口缩到面板本身：全屏窗口会拦掉桌面底部上滑（系统手势拿不到事件）
+        view.panelWindowRect()?.let { rect ->
+            morePanelBounds = android.graphics.Rect(rect)
+            params.width = rect.width()
+            params.height = rect.height()
+            params.gravity = Gravity.TOP or Gravity.START
+            params.x = rect.left
+            params.y = rect.top
+            view.setWindowOrigin(rect.left, rect.top)
+        }
         try {
             windowManager.updateViewLayout(view, params)
             view.showBuiltInMorePanel()
             view.requestFocus()
+            logger(
+                Log.DEBUG,
+                "MORE_PANEL_SHOWN window=" + params.width + "x" + params.height +
+                    " at=" + params.x + "," + params.y +
+                    " letters=" + catalogSnapshot.appGroups.joinToString("") { it.letter },
+                null,
+            )
         } catch (exception: RuntimeException) {
             logger(Log.WARN, "SYSTEM_OVERLAY_FOCUS_FAILED", exception)
             removeOverlay()
@@ -588,7 +686,8 @@ internal class ColorOsFreeformCoordinator(
     }
 
     private fun createOverlayParams(focusable: Boolean): WindowManager.LayoutParams {
-        // 非聚焦窗不带 ALT 时位于输入法上方；聚焦面板则需要 ALT 保持相同层级。
+        // 层级：2012(INPUT_METHOD_DIALOG) 刚好压在输入法(2011)之上、状态栏之下；
+        // 用 2038(APPLICATION_OVERLAY) 时轮盘会被弹出的输入法整块盖住（本机实测）。
         val inputFlags =
             if (focusable) {
                 WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
@@ -599,7 +698,7 @@ internal class ColorOsFreeformCoordinator(
         return WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            OVERLAY_WINDOW_TYPE,
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
@@ -625,6 +724,7 @@ internal class ColorOsFreeformCoordinator(
         overlay = null
         if (sidebar.isPending) sidebar.cancel()
         morePanelActive = false
+        morePanelBounds = null
         val cleanupFailure = view.disposeOverlay()
         try {
             windowManager.removeViewImmediate(view)
@@ -711,6 +811,8 @@ internal class ColorOsFreeformCoordinator(
 
     private companion object {
         const val CATALOG_THREAD_NAME = "FlymeFreeform-Catalog"
+        // 2012：压在输入法之上、状态栏之下（2038 会被输入法盖住）
+        val OVERLAY_WINDOW_TYPE = WindowManager.LayoutParams.TYPE_INPUT_METHOD_DIALOG
         const val OVERLAY_FAILURE_LOG_INTERVAL_MS = 10_000L
         val CRITICAL_PACKAGES =
             setOf(

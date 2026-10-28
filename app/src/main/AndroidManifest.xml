@@ -35,6 +35,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 面板里拖动排序的落盘请求：system_server 发广播，App 进程即使没运行也会被拉起 -->
+        <receiver
+            android:name=".ToolOrderReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.eta.flymefreeform.action.TOOL_ORDER_CHANGED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

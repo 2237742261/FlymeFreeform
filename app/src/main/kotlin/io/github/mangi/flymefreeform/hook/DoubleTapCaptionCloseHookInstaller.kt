@@ -44,8 +44,17 @@ internal class DoubleTapCaptionCloseHookInstaller(
                     val result = chain.proceed()
                     val settings = configuration.snapshot
                     val mode = settings.outsideTapCloseMode
-                    if (environment.isModuleAllowed() && mode == OutsideTapCloseMode.CaptionDoubleTap) {
+                    // 迷你小窗上的双击是 ColorOS 原生的「与前台应用交换」，不能当成关闭：
+                    // 以前无条件 exitFlexibleTask，会把刚交换出来的小窗直接关掉（用户报「换完就消失」）。
+                    val mini = isMiniCaption(chain.thisObject) || isMiniTopTask(getTopZoomTask)
+                    if (
+                        environment.isModuleAllowed() &&
+                            mode == OutsideTapCloseMode.CaptionDoubleTap &&
+                            !mini
+                    ) {
                         closeTopFlexibleTask(getTopZoomTask, exitFlexibleTask)
+                    } else if (mini) {
+                        module.log(Log.DEBUG, TAG, "CAPTION_DOUBLE_TAP_SKIP_MINI")
                     }
                     result
                 }
@@ -54,6 +63,35 @@ internal class DoubleTapCaptionCloseHookInstaller(
             module.log(Log.WARN, TAG, "CAPTION_DOUBLE_TAP_TARGET_UNAVAILABLE", exception)
         } catch (exception: LinkageError) {
             module.log(Log.WARN, TAG, "CAPTION_DOUBLE_TAP_TARGET_LINKAGE_FAILED", exception)
+        }
+    }
+
+    /** 迷你态判定①：底部横条自己就知道（`FlexibleTaskCaptionView.isMiniZoomState()`）。 */
+    private fun isMiniCaption(caption: Any?): Boolean {
+        if (caption == null) return false
+        return try {
+            val method =
+                caption.javaClass.methods.firstOrNull {
+                    it.name == "isMiniZoomState" && it.parameterCount == 0
+                } ?: return false
+            method.invoke(caption) as? Boolean ?: false
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /** 迷你态判定②：问 controller 最上层小窗是否处于迷你态。 */
+    private fun isMiniTopTask(getTopZoomTask: Method): Boolean {
+        return try {
+            val controller = FlexibleTaskHandle.controller ?: return false
+            val task = getTopZoomTask.invoke(controller) ?: return false
+            val method =
+                controller.javaClass.methods.firstOrNull {
+                    it.name == "isTaskInMiniFlexible" && it.parameterCount == 1
+                } ?: return false
+            method.invoke(controller, task) as? Boolean ?: false
+        } catch (_: Throwable) {
+            false
         }
     }
 

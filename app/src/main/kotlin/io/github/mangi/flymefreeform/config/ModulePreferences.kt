@@ -3,6 +3,10 @@ package io.github.mangi.flymefreeform.config
 /** App 与 Hook 进程共享的框架配置协议；已发布的名称和类型不可随意复用。 */
 internal object ModulePreferences {
     const val GROUP = "module_runtime"
+    /** system_server 侧（面板拖动排序后）回写工具栏顺序给 App 落盘。 */
+    const val ACTION_TOOL_ORDER_CHANGED =
+        "com.eta.flymefreeform.action.TOOL_ORDER_CHANGED"
+
     const val ACTION_PINNED_TARGETS_CHANGED =
         "com.eta.flymefreeform.action.PINNED_TARGETS_CHANGED"
     const val EXTRA_PINNED_TARGETS = "pinned_targets"
@@ -10,6 +14,17 @@ internal object ModulePreferences {
     const val EXTRA_INNER_PINNED_TARGETS = "inner_pinned_targets"
     const val EXTRA_INNER_PINS_SAVED = "inner_pins_saved"
     const val EXTRA_MODULE_ENABLED = "module_enabled"
+    const val EXTRA_LEFT_CORNER_ENABLED = "corner_left_enabled"
+    const val EXTRA_RIGHT_CORNER_ENABLED = "corner_right_enabled"
+    const val EXTRA_CORNER_TRIGGER_RANGE_DP = "corner_trigger_range_dp"
+    const val EXTRA_OUTSIDE_TAP_CLOSE_MODE = "outside_tap_close_mode"
+    const val EXTRA_HANDLE_SWIPE_UP_TO_MINI = "handle_swipe_up_to_mini"
+    const val EXTRA_PAUSE_IN_LANDSCAPE = "pause_in_landscape"
+    const val EXTRA_PAUSE_IN_GAME_MODE = "pause_in_game_mode"
+    const val EXTRA_RADIAL_VIBRATE_ENABLED = "radial_vibrate_enabled"
+    const val EXTRA_RADIAL_VIBRATE_STRENGTH = "radial_vibrate_strength"
+    const val EXTRA_KEEP_AWAKE_ENABLED = "keep_awake_enabled"
+    const val EXTRA_TOOL_ORDER = "tool_order"
     const val KEY_MODULE_ENABLED = "enabled"
     const val KEY_LEFT_CORNER_ENABLED = "corner_left_enabled"
     const val KEY_RIGHT_CORNER_ENABLED = "corner_right_enabled"
@@ -21,6 +36,17 @@ internal object ModulePreferences {
     const val KEY_OUTSIDE_TAP_CLOSE_MODE = "outside_tap_close_mode_v1"
     const val KEY_HANDLE_SWIPE_UP_TO_MINI_ENABLED = "handle_swipe_up_to_mini_enabled_v2"
     const val KEY_KEEP_AWAKE_ENABLED = "keep_awake_enabled_v1"
+
+    /** 工具栏（「更多」面板首行）里工具的显示顺序，逗号分隔的侧边栏 alias。 */
+    const val KEY_TOOL_ORDER = "tool_order_v1"
+
+    /**
+     * 同一份顺序在 Settings.Global 里的镜像键。
+     *
+     * 持久化的真值放这里：system_server 能自己写、重启后自己读回来，
+     * 不依赖「广播叫醒 App 再让 App 写 RemotePreferences」那条链路（实测会静默失败）。
+     */
+    const val GLOBAL_KEY_TOOL_ORDER = "flyme_freeform_tool_order"
 
     /** 轮盘震动：手指滑到应用图标上给一次触感。 */
     const val KEY_RADIAL_VIBRATE_ENABLED = "radial_vibrate_enabled_v1"

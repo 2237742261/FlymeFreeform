@@ -475,25 +475,11 @@ private fun RadialVibrateStrengthSlider(
     )
 }
 
-/** 设置页拖动强度条时的触感预览；失败静默。 */
+/** 设置页拖动强度条时的触感预览：与轮盘滑选共用 [Haptics]。 */
 private fun vibratePreview(context: android.content.Context, strength: Int) {
-    try {
-        val vibrator =
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                context.getSystemService(android.os.VibratorManager::class.java)?.defaultVibrator
-            } else {
-                @Suppress("DEPRECATION")
-                context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
-            } ?: return
-        val amplitude =
-            (1 + ModulePreferences.coerceRadialVibrateStrength(strength) * 254 / 100).coerceIn(1, 255)
-        vibrator.vibrate(android.os.VibrationEffect.createOneShot(VIBRATE_PREVIEW_MS, amplitude))
-    } catch (_: RuntimeException) {
-        // 预览失败不影响设置
-    }
+    io.github.mangi.flymefreeform.platform.Haptics.tick(context, strength)
 }
 
-private const val VIBRATE_PREVIEW_MS = 20L
 private const val VIBRATE_PREVIEW_INTERVAL_MS = 90L
 
 @Composable

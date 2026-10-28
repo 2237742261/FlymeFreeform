@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.os.SystemClock
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
 import io.github.mangi.flymefreeform.config.ModulePreferences
@@ -27,6 +28,8 @@ internal class FrameworkConnectionRepository(private val context: Context) {
     private val pendingServices = IdentityHashMap<XposedService, Unit>()
     private val unavailableServices = IdentityHashMap<XposedService, FrameworkConnectionState>()
     private var activeConnection: ActiveConnection? = null
+    private val toolOrderLock = Any()
+    private var pendingToolOrder: List<String>? = null
 
     private val mutableState = MutableStateFlow(FrameworkConnectionState())
     val state: StateFlow<FrameworkConnectionState> = mutableState.asStateFlow()
@@ -69,6 +72,55 @@ internal class FrameworkConnectionRepository(private val context: Context) {
 
     fun setOutsideTapCloseMode(mode: OutsideTapCloseMode) =
         updateSettings { it.copy(outsideTapCloseMode = mode) }
+
+    fun setToolOrder(aliases: List<String>) =
+        updateSettings { it.copy(toolOrder = aliases.distinct()) }
+
+    /**
+     * 面板排序的落盘入口（供清单静态接收器调用，可能在 App 进程刚被拉起时执行）。
+     *
+     * 先排队，然后最多等 [timeoutMs] 让 LSPosed 服务连接就绪，再真正写入；
+     * 连接还没就绪时不能像 updateSettings 那样直接 return，否则广播拉起进程的场景会丢数据。
+     */
+    fun persistToolOrderBlocking(aliases: List<String>, timeoutMs: Long = 8000L): Boolean {
+        val ordered = aliases.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (ordered.isEmpty()) return false
+        synchronized(toolOrderLock) { pendingToolOrder = ordered }
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (activeConnection != null && mutableState.value.canChangeSettings) break
+            try {
+                Thread.sleep(50L)
+            } catch (_: InterruptedException) {
+                break
+            }
+        }
+        return flushPendingToolOrder()
+    }
+
+    /** 连接就绪后把排队的顺序写进去；返回是否已落盘。 */
+    private fun flushPendingToolOrder(): Boolean =
+        synchronized(toolOrderLock) {
+            val ordered = pendingToolOrder ?: return true
+            val connection = activeConnection
+            val previous = mutableState.value
+            if (connection == null || !previous.canChangeSettings) return false
+            val next = previous.settings.copy(toolOrder = ordered)
+            if (next.toolOrder == previous.settings.toolOrder) {
+                pendingToolOrder = null
+                return true
+            }
+            if (!commitSettings(connection.preferences, next)) {
+                isolateFailedConnection(connection, previous)
+                return false
+            }
+            pendingToolOrder = null
+            val confirmed = previous.copy(settings = next, isUpdating = false, issue = null)
+            activeConnection = connection.copy(confirmedState = confirmed)
+            mutableState.value = confirmed
+            notifyPinnedTargetsChanged(next)
+            true
+        }
 
     fun setRadialVibrateEnabled(enabled: Boolean) =
         updateSettings { it.copy(radialVibrateEnabled = enabled) }
@@ -152,13 +204,8 @@ internal class FrameworkConnectionRepository(private val context: Context) {
                 val confirmed = previous.copy(settings = next, isUpdating = false, issue = null)
                 activeConnection = connection.copy(confirmedState = confirmed)
                 mutableState.value = confirmed
-                if (next.pinsSaved != previous.settings.pinsSaved ||
-                    next.pinnedTargets != previous.settings.pinnedTargets ||
-                    next.innerPinsSaved != previous.settings.innerPinsSaved ||
-                    next.innerPinnedTargets != previous.settings.innerPinnedTargets
-                ) {
-                    notifyPinnedTargetsChanged(next)
-                }
+                // 任何设置变化都要推给各 hook 进程（以前只有少数几项，其余改完必须重启手机）
+                if (next != previous.settings) notifyPinnedTargetsChanged(next)
             } else {
                 isolateFailedConnection(connection, previous)
             }
@@ -181,10 +228,36 @@ internal class FrameworkConnectionRepository(private val context: Context) {
             )
             putExtra(ModulePreferences.EXTRA_INNER_PINS_SAVED, settings.innerPinsSaved)
             putExtra(ModulePreferences.EXTRA_MODULE_ENABLED, settings.enabled)
+            putExtra(ModulePreferences.EXTRA_LEFT_CORNER_ENABLED, settings.leftCornerEnabled)
+            putExtra(ModulePreferences.EXTRA_RIGHT_CORNER_ENABLED, settings.rightCornerEnabled)
+            putExtra(ModulePreferences.EXTRA_CORNER_TRIGGER_RANGE_DP, settings.cornerTriggerRangeDp)
+            putExtra(
+                ModulePreferences.EXTRA_OUTSIDE_TAP_CLOSE_MODE,
+                settings.outsideTapCloseMode.storedValue,
+            )
+            putExtra(
+                ModulePreferences.EXTRA_HANDLE_SWIPE_UP_TO_MINI,
+                settings.handleSwipeUpToMiniEnabled,
+            )
+            putExtra(ModulePreferences.EXTRA_PAUSE_IN_LANDSCAPE, settings.pauseInLandscape)
+            putExtra(ModulePreferences.EXTRA_PAUSE_IN_GAME_MODE, settings.pauseInGameMode)
+            putExtra(
+                ModulePreferences.EXTRA_RADIAL_VIBRATE_ENABLED,
+                settings.radialVibrateEnabled,
+            )
+            putExtra(
+                ModulePreferences.EXTRA_RADIAL_VIBRATE_STRENGTH,
+                settings.radialVibrateStrength,
+            )
+            putExtra(ModulePreferences.EXTRA_KEEP_AWAKE_ENABLED, settings.keepAwakeEnabled)
+            putExtra(ModulePreferences.EXTRA_TOOL_ORDER, settings.toolOrder.joinToString(","))
         }
         try {
             context.sendBroadcast(intent.setPackage("android"))
             context.sendBroadcast(intent.setPackage("com.coloros.smartsidebar"))
+            context.sendBroadcast(intent.setPackage("com.android.systemui"))
+            // 桌面进程也装了角落热区，必须一起推（以前缺这一条，角落开关改完得杀 launcher）
+            context.sendBroadcast(intent.setPackage("com.android.launcher"))
         } catch (_: RuntimeException) {
             // Remote preference commit remains authoritative if a target process is unavailable.
         }
@@ -248,6 +321,8 @@ internal class FrameworkConnectionRepository(private val context: Context) {
             unavailableServices[service] = result.state
         }
         mutableState.value = result.state
+        // 连接刚就绪：把广播排队下来的排序落盘（App 被广播拉起时的关键一步）
+        if (result.connection != null) flushPendingToolOrder()
     }
 
     private fun probeService(service: XposedService): ProbeResult {

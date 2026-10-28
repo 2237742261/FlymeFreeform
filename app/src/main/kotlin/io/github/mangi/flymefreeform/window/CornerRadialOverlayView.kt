@@ -14,33 +14,50 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.absoluteOffset
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -58,11 +75,16 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.AbstractComposeView
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -99,6 +121,9 @@ internal class CornerRadialOverlayView(
     interface Listener {
         fun onEntryCommitted(entry: RadialEntry)
 
+        /** 面板里拖动排序后回调（alias 列表，按新顺序）。 */
+        fun onToolOrderChanged(aliases: List<String> = emptyList())
+
         fun onMorePanelRequested()
 
         fun onDismissRequested()
@@ -121,7 +146,11 @@ internal class CornerRadialOverlayView(
     private val handoffLayoutState = mutableStateOf(EMPTY_LAYOUT)
     private val handoffMetricsState = mutableStateOf<RadialVisualMetrics?>(null)
     private var appliedWindowInsets: WindowInsets? = null
-    private var catalog = AppCatalogSnapshot()
+    private val catalogState = mutableStateOf(AppCatalogSnapshot())
+
+    // 用 State 承载目录快照：面板在打开状态下收到新目录（例如排序落盘后重载）需要重组
+    private val catalog: AppCatalogSnapshot
+        get() = catalogState.value
     private val radialClipPath = Path()
     private val radialImages = mutableStateOf<List<RadialImage>>(emptyList())
     private val innerImages = mutableStateOf<List<RadialImage>>(emptyList())
@@ -137,7 +166,18 @@ internal class CornerRadialOverlayView(
     private var vibrateEnabled = false
     private var lastVibratedIndex: Int? = null
     private var lastVibrateUptime = 0L
-    private var vibrateAmplitude = 153
+    private var hadWindowFocus = false
+    private var panelShownAt = 0L
+    // 面板模式下窗口会缩到面板大小，这里记窗口左上角的屏幕坐标（轮盘模式为 0）
+    private var screenWidth = 0
+    private var screenHeight = 0
+    private var cachedSafeInsets: OverlaySafeInsets? = null
+    @Volatile
+    private var cachedTuning: PanelTuning? = null
+    private var cachedRadialInsets: OverlaySafeInsets? = null
+    private val windowOriginX = mutableIntStateOf(0)
+    private val windowOriginY = mutableIntStateOf(0)
+    private var vibrateStrength = ModulePreferences.DEFAULT_RADIAL_VIBRATE_STRENGTH
     private val timeout = Runnable(::requestDismiss)
     private val dismissFallback = Runnable(::completeRadialExit)
 
@@ -169,8 +209,7 @@ internal class CornerRadialOverlayView(
     /** 由协调器在呼出前写入当前震动配置（关=不震）。 */
     fun applyVibration(enabled: Boolean, strength: Int) {
         vibrateEnabled = enabled
-        vibrateAmplitude =
-            (1 + ModulePreferences.coerceRadialVibrateStrength(strength) * 254 / 100).coerceIn(1, 255)
+        vibrateStrength = ModulePreferences.coerceRadialVibrateStrength(strength)
     }
 
     fun begin(
@@ -181,12 +220,14 @@ internal class CornerRadialOverlayView(
     ) {
         check(!isAttachedToWindow) { "Overlay must be initialized before it is attached" }
         this.side = side
-        this.catalog = catalog
+        catalogState.value = catalog
         latestX = x
         latestY = y
         radialImages.value = catalog.radialApps.map(::RadialImage)
         innerImages.value = catalog.innerApps.map(::RadialImage)
-        panelImages = catalog.panelApps.associate { entry -> entry.target to entry.icon.asImageBitmap() }
+        panelImages =
+            (catalog.panelApps + catalog.tools + catalog.appGroups.flatMap { it.apps })
+                .associate { entry -> entry.target to entry.icon.asImageBitmap() }
         selectedIndex = null
         selectedIndexState.intValue = NO_SELECTION
         handoffEntryProgress.floatValue = 0f
@@ -486,8 +527,11 @@ internal class CornerRadialOverlayView(
                 iconScale = exitSample.iconScale + (entrySample.iconScale - 1f) * (1f - dismissalBlend),
             )
             val visual = dismissal ?: entrySample
-            val scrimAlpha = if (panelModeState.value) handoffVisuals.scrimProgress else visual.contentAlpha
-            drawRect(Color.Black, alpha = OverlayBackdrop.MAX_ALPHA * scrimAlpha)
+            // 面板模式下窗口只有面板那么大，黑色蒙层会变成一道黑影扫过（用户反馈）→ 直接不画
+            val scrimAlpha = if (panelModeState.value) 0f else visual.contentAlpha
+            if (scrimAlpha > 0f) {
+                drawRect(Color.Black, alpha = OverlayBackdrop.MAX_ALPHA * scrimAlpha)
+            }
             val alpha = visual.contentAlpha * if (panelModeState.value) handoffVisuals.contentAlpha else 1f
             if (alpha <= 0f) return@Canvas
             drawRadialItems(
@@ -639,19 +683,30 @@ internal class CornerRadialOverlayView(
             alpha = alpha,
         )
         val rimWidth = diameter * MORE_RIM_WIDTH_FRACTION
-        drawCircle(
-            brush = Brush.verticalGradient(
-                0f to colors.moreRim,
-                0.5f to colors.moreRim.copy(alpha = 0f),
-                1f to colors.moreRim,
-                startY = centerY - radius,
-                endY = centerY + radius,
-            ),
-            radius = radius - rimWidth / 2f,
-            center = Offset(centerX, centerY),
-            alpha = alpha,
-            style = Stroke(width = rimWidth),
-        )
+        if (colors.moreRimSolid) {
+            // 深色：一整圈纯色描边（原来的 verticalGradient 在深色下只剩上、下两个半圈白边）。
+            drawCircle(
+                color = colors.moreRim,
+                radius = radius - rimWidth / 2f,
+                center = Offset(centerX, centerY),
+                alpha = alpha,
+                style = Stroke(width = rimWidth),
+            )
+        } else {
+            drawCircle(
+                brush = Brush.verticalGradient(
+                    0f to colors.moreRim,
+                    0.5f to colors.moreRim.copy(alpha = 0f),
+                    1f to colors.moreRim,
+                    startY = centerY - radius,
+                    endY = centerY + radius,
+                ),
+                radius = radius - rimWidth / 2f,
+                center = Offset(centerX, centerY),
+                alpha = alpha,
+                style = Stroke(width = rimWidth),
+            )
+        }
         for (offset in -1..1) {
             drawCircle(
                 color = colors.moreDot,
@@ -700,9 +755,18 @@ internal class CornerRadialOverlayView(
         animationsEnabled: Boolean,
     ) {
         val density = androidx.compose.ui.platform.LocalDensity.current
+        val composeContext = androidx.compose.ui.platform.LocalContext.current
         val squircleEnabled = isSquircleEnabled()
-        val panelColor = MiuixTheme.colorScheme.surface.copy(alpha = PANEL_SURFACE_ALPHA)
-        val labelColor = MiuixTheme.colorScheme.onSurface
+        // 跟随系统深色模式：system_server 里只能读窗口 context 的 uiMode
+        val dark =
+            (composeContext.resources.configuration.uiMode and
+                Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        val panelColor = if (dark) Color(0xFF1C1C1E) else Color.White
+        val labelColor = if (dark) Color(0xFFEDEDED) else Color(0xFF1A1A1A)
+        val sectionColor = if (dark) Color(0xFF9A9A9A) else Color(0xFF7A7A7A)
+        // 展开/收起按钮要和底栏拉开对比，别糊成一片
+        val toggleBackground = if (dark) Color(0xFF4C4C58) else Color(0xFFD2D2DC)
+        val stripBackground = if (dark) Color(0xFF33333A) else Color(0xFFE8E8EF)
         val bounds = metrics.bounds
         val width = with(density) { bounds.width.toDp() }
         val height = with(density) { bounds.height.toDp() }
@@ -714,14 +778,97 @@ internal class CornerRadialOverlayView(
         val labelGap = with(density) { (metrics.labelTopOffset - metrics.iconDiameter / 2f).toDp() }
         val labelSize = with(density) { metrics.labelTextSize.toSp() }
 
+        val gridState = rememberLazyGridState()
+        val scope = rememberCoroutineScope()
+        var toolsExpanded by remember { mutableStateOf(false) }
+        // 工具栏展开后「长按 1.3 秒」进入的排序会话；点「收起」结束并提交顺序
+        var ordering by remember { mutableStateOf(false) }
+        var orderDirty by remember { mutableStateOf(false) }
+        // 拖动排序先在本地列表里改，松手时提交
+        val orderedTools = remember { mutableStateListOf<RadialEntry>() }
+        // 已提交但服务端还没回传一致的顺序：用它给目录排序，避免收起瞬间跳回旧顺序
+        var pendingOrder by remember { mutableStateOf<List<String>>(emptyList()) }
+        LaunchedEffect(catalog.tools, pendingOrder) {
+            if (ordering) return@LaunchedEffect
+            val source =
+                if (pendingOrder.isEmpty()) catalog.tools
+                else {
+                    val index = pendingOrder.withIndex().associate { (i, alias) -> alias to i }
+                    catalog.tools.sortedBy { entry ->
+                        val alias =
+                            (entry.target as? io.github.mangi.flymefreeform.config.PinnedTarget.Sidebar)
+                                ?.alias
+                        index[alias] ?: Int.MAX_VALUE
+                    }
+                }
+            orderedTools.clear()
+            orderedTools.addAll(source)
+        }
+        val showToggle = orderedTools.size > TOOL_STRIP_FIXED_COUNT
+        val expandedNow = toolsExpanded || ordering
+        val visibleTools =
+            if (expandedNow) orderedTools.toList() else orderedTools.take(TOOL_STRIP_FIXED_COUNT)
+        val stripItems: List<RadialEntry?> =
+            if (showToggle) visibleTools + listOf<RadialEntry?>(null) else visibleTools
+        // 「展开/收起」按钮所在的格子不参与长按排序（长按它不该进编辑态）
+        val toggleIndex = if (showToggle) stripItems.lastIndex else -1
+        val stripRows = if (stripItems.isEmpty()) 0 else (stripItems.size + TOOL_STRIP_SLOTS - 1) / TOOL_STRIP_SLOTS
+        // 工具栏格子：图标 + 四周等距内边距（展开时再加一行文字）
+        val cellPadding = with(density) { metrics.cellPadding.toDp() }
+        val stripPadding = with(density) { metrics.stripPadding.toDp() }
+        val indexBarInset = with(density) { metrics.indexBarInset.toDp() }
+        val stripCellHeight =
+            if (expandedNow) iconSize + cellPadding * 2 + (labelSize.value * 1.6f).dp
+            else iconSize + cellPadding * 2
+        val stripHintReserve = if (ordering) 20.dp else 0.dp
+        val stripReserve =
+            if (stripRows == 0) 0.dp
+            else stripCellHeight * stripRows.toFloat() + 32.dp + stripHintReserve
+        val groupOffsets =
+            remember(catalog.appGroups) {
+                var index = 0
+                catalog.appGroups
+                    .map { group ->
+                        val start = index
+                        index += 1 + group.apps.size
+                        group.letter to start
+                    }
+                    .toMap()
+            }
+        val vibrateEnabled = catalog.settings.radialVibrateEnabled
+        val vibrateStrength = catalog.settings.radialVibrateStrength
+
+        fun tickVibrate() {
+            if (vibrateEnabled) {
+                io.github.mangi.flymefreeform.platform.Haptics.tick(composeContext, vibrateStrength)
+            }
+        }
+
+        fun commitToolOrder() {
+            val aliases =
+                orderedTools.mapNotNull { entry ->
+                    (entry.target as? io.github.mangi.flymefreeform.config.PinnedTarget.Sidebar)?.alias
+                }
+            orderDirty = false
+            ordering = false
+            pendingOrder = aliases
+            listener.onToolOrderChanged(aliases)
+        }
+
         Box(
             modifier =
                 Modifier
-                    .absoluteOffset { IntOffset(bounds.left.roundToInt(), bounds.top.roundToInt()) }
+                    .absoluteOffset {
+                        IntOffset(
+                            bounds.left.roundToInt() - windowOriginX.intValue,
+                            bounds.top.roundToInt() - windowOriginY.intValue,
+                        )
+                    }
                     .requiredSize(width = width, height = height)
                     .panelReveal(
                         progress = {
-                            if (animationsEnabled) panelProgress.value else 1f
+                            // 横屏不做角落展开动画：窗口只有面板那么大，展开过程看起来像「从中间飞进来」
+                            if (animationsEnabled && !metrics.isLandscape) panelProgress.value else 1f
                         },
                         seedSize = metrics.iconDiameter,
                         cornerRadius = metrics.cornerRadius,
@@ -739,72 +886,509 @@ internal class CornerRadialOverlayView(
         ) {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(metrics.columns),
+                state = gridState,
                 modifier =
                     Modifier
                         .fillMaxSize()
                         .graphicsLayer {
                             val progress =
-                                if (animationsEnabled) {
-                                    contentProgress.value.coerceIn(0f, 1f)
-                                } else {
-                                    1f
-                                }
+                                if (animationsEnabled) contentProgress.value.coerceIn(0f, 1f) else 1f
                             alpha = progress
                             translationY =
-                                (1f - progress) *
-                                    metrics.iconDiameter *
-                                    PANEL_CONTENT_TRANSLATION_FRACTION
+                                (1f - progress) * metrics.iconDiameter * PANEL_CONTENT_TRANSLATION_FRACTION
                             compositingStrategy = CompositingStrategy.ModulateAlpha
                         },
                 contentPadding =
                     PaddingValues(
-                        horizontal = horizontalPadding,
-                        vertical = verticalPadding,
+                        start = horizontalPadding,
+                        end =
+                            if (metrics.showIndexBar) INDEX_BAR_WIDTH + INDEX_BAR_GAP
+                            else horizontalPadding,
+                        top = verticalPadding + 4.dp,
+                        bottom = verticalPadding + stripReserve + 8.dp,
                     ),
                 verticalArrangement = Arrangement.Top,
-                userScrollEnabled = inputEnabled,
+                userScrollEnabled = inputEnabled && !ordering,
             ) {
-                items(
-                    items = catalog.panelApps,
-                    key = { entry -> io.github.mangi.flymefreeform.config.PinnedTargetCodec.encode(entry.target) },
-                ) { entry ->
-                    Column(
-                        modifier =
+                catalog.appGroups.forEach { group ->
+                    item(key = "header_" + group.letter, span = { GridItemSpan(metrics.columns) }) {
+                        Text(
+                            text = group.letter,
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 2.dp, top = 8.dp, bottom = 2.dp),
+                            color = sectionColor,
+                            fontSize = labelSize * 1.30f,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                        )
+                    }
+                    items(
+                        items = group.apps,
+                        key = { entry -> io.github.mangi.flymefreeform.config.PinnedTargetCodec.encode(entry.target) },
+                    ) { entry ->
+                        PanelCell(
+                            entry = entry,
+                            images = panelImages,
+                            iconSize = iconSize,
+                            labelSize = labelSize,
+                            labelColor = labelColor,
+                            labelGap = labelGap,
+                            cellHeight = cellHeight,
+                            inputEnabled = inputEnabled,
+                            onEntry = listener::onEntryCommitted,
+                        )
+                    }
+                }
+            }
+
+            if (stripItems.isNotEmpty()) {
+                ToolStripBlock(
+                    items = stripItems,
+                    slots = metrics.columns,
+                    toggleIndex = toggleIndex,
+                    expanded = expandedNow,
+                    ordering = ordering,
+                    images = panelImages,
+                    iconSize = iconSize,
+                    labelSize = labelSize,
+                    labelColor = labelColor,
+                    labelGap = labelGap,
+                    cellHeight = stripCellHeight,
+                    showLabels = expandedNow,
+                    inputEnabled = inputEnabled,
+                    onEntry = { entry -> if (!ordering) listener.onEntryCommitted(entry) },
+                    onToggle = {
+                        if (expandedNow) {
+                            // 松手时已经提交过；这里只负责收起（万一还有未提交的改动也一并保存）
+                            toolsExpanded = false
+                            if (orderDirty) {
+                                commitToolOrder()
+                            } else {
+                                ordering = false
+                            }
+                        } else {
+                            toolsExpanded = true
+                        }
+                    },
+                    onStartOrdering = {
+                        if (!ordering) {
+                            ordering = true
+                            orderDirty = false
+                            tickVibrate()
+                        }
+                    },
+                    onFinishOrdering = {
+                        // 松手直接提交，不用再点「收起」
+                        if (ordering) {
+                            if (orderDirty) commitToolOrder() else ordering = false
+                        }
+                    },
+                    onMoveTool = { from, to ->
+                        if (from in orderedTools.indices && to in orderedTools.indices) {
+                            orderedTools.add(to, orderedTools.removeAt(from))
+                            orderDirty = true
+                        }
+                    },
+                    onVibrate = ::tickVibrate,
+                    toggleBackground = toggleBackground,
+                    stripBackground = stripBackground,
+                    stripPadding = stripPadding,
+                    modifier =
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            // 左右等距 → 工具栏在面板里居中；不躲索引条
+                            .padding(
+                                start = horizontalPadding,
+                                end = horizontalPadding,
+                                bottom = 8.dp,
+                            ),
+                )
+            }
+
+            if (groupOffsets.size > 1 && !ordering && metrics.showIndexBar) {
+                LetterIndexBar(
+                    letters = catalog.appGroups.map { it.letter },
+                    color = sectionColor,
+                    modifier = Modifier.align(Alignment.CenterEnd).width(INDEX_BAR_WIDTH),
+                    verticalInset = indexBarInset,
+                    onLetter = { letter ->
+                        toolsExpanded = false
+                        val target = groupOffsets[letter]
+                        if (target != null) {
+                            scope.launch { gridState.scrollToItem(target) }
+                        }
+                        tickVibrate()
+                    },
+                )
+            }
+        }
+    }
+
+    @OptIn(ExperimentalFoundationApi::class)
+    @Composable
+    private fun ToolStripBlock(
+        items: List<RadialEntry?>,
+        slots: Int,
+        toggleIndex: Int,
+        expanded: Boolean,
+        ordering: Boolean,
+        images: Map<io.github.mangi.flymefreeform.config.PinnedTarget, ImageBitmap>,
+        iconSize: androidx.compose.ui.unit.Dp,
+        labelSize: androidx.compose.ui.unit.TextUnit,
+        labelColor: Color,
+        labelGap: androidx.compose.ui.unit.Dp,
+        cellHeight: androidx.compose.ui.unit.Dp,
+        showLabels: Boolean,
+        inputEnabled: Boolean,
+        onEntry: (RadialEntry) -> Unit,
+        onToggle: () -> Unit,
+        onStartOrdering: () -> Unit,
+        onFinishOrdering: () -> Unit,
+        onMoveTool: (Int, Int) -> Unit,
+        onVibrate: () -> Unit,
+        toggleBackground: Color,
+        stripBackground: Color,
+        stripPadding: androidx.compose.ui.unit.Dp = 5.dp,
+        modifier: Modifier = Modifier,
+    ) {
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        val cellHeightPx = with(density) { cellHeight.toPx() }
+        var blockWidth by remember { mutableIntStateOf(0) }
+        Column(
+            modifier =
+                modifier
+                    .padding(top = 4.dp)
+                    .onSizeChanged { blockWidth = it.width }
+                    .then(
+                        // 工具栏展开后：长按图标满 1.3 秒震动，不松手直接拖动排序
+                        if (!expanded) {
                             Modifier
-                                .fillMaxWidth()
-                                .height(cellHeight)
-                                .clickable(enabled = inputEnabled) {
-                                    listener.onEntryCommitted(entry)
-                                },
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        panelImages[entry.target]?.let { image ->
-                            Image(
-                                bitmap = image,
-                                contentDescription = null,
-                                modifier = Modifier.size(iconSize),
-                                filterQuality = FilterQuality.High,
+                        } else {
+                            Modifier.pointerInput(items.size, blockWidth, cellHeightPx) {
+                                fun indexAt(position: Offset): Int {
+                                    if (blockWidth <= 0 || items.isEmpty()) return -1
+                                    val cellWidth = blockWidth / slots.toFloat()
+                                    val column =
+                                        (position.x / cellWidth).toInt().coerceIn(0, slots - 1)
+                                    val row = (position.y / cellHeightPx).toInt().coerceAtLeast(0)
+                                    return (row * slots + column).coerceIn(0, items.lastIndex)
+                                }
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    // withTimeoutOrNull 只在「超时」时返回 null，即长按满 1.3 秒
+                                    val heldLongEnough =
+                                        withTimeoutOrNull(ORDER_LONG_PRESS_MS) {
+                                            while (true) {
+                                                val event = awaitPointerEvent()
+                                                val change =
+                                                    event.changes.firstOrNull { it.id == down.id }
+                                                        ?: return@withTimeoutOrNull Unit
+                                                if (!change.pressed) return@withTimeoutOrNull Unit
+                                                if ((change.position - down.position).getDistance() >
+                                                    viewConfiguration.touchSlop
+                                                ) {
+                                                    return@withTimeoutOrNull Unit
+                                                }
+                                            }
+                                        } == null
+                                    if (!heldLongEnough) return@awaitEachGesture
+                                    val startIndex = indexAt(down.position)
+                                    if (startIndex < 0 || startIndex == toggleIndex) {
+                                        return@awaitEachGesture
+                                    }
+                                    onStartOrdering()
+                                    var dragging = startIndex
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        val change =
+                                            event.changes.firstOrNull { it.id == down.id } ?: break
+                                        change.consume()
+                                        if (!change.pressed) break
+                                        val target = indexAt(change.position)
+                                        if (dragging >= 0 && target >= 0 && target != dragging) {
+                                            onMoveTool(dragging, target)
+                                            dragging = target
+                                            onVibrate()
+                                        }
+                                    }
+                                    onFinishOrdering()
+                                }
+                            }
+                        },
+                    )
+                    // 工具栏整体一块底色，和上方应用网格区分开
+                    .background(stripBackground, RoundedCornerShape(22.dp))
+                    .padding(horizontal = stripPadding, vertical = stripPadding),
+        ) {
+            if (ordering) {
+                Text(
+                    text = "拖动排序中 · 松手即保存",
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    color = labelColor,
+                    fontSize = labelSize * 0.9f,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                )
+            }
+            items.chunked(slots).forEach { row ->
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    row.forEach { item ->
+                        if (item == null) {
+                            ToolStripToggle(
+                                expanded = expanded,
+                                iconSize = iconSize,
+                                labelSize = labelSize,
+                                labelColor = labelColor,
+                                cellHeight = cellHeight,
+                                showLabel = showLabels,
+                                centerVertically = true,
+                                inputEnabled = inputEnabled,
+                                onToggle = onToggle,
+                                background = toggleBackground,
+                                modifier = Modifier.weight(1f),
+                            )
+                        } else {
+                            PanelCell(
+                                entry = item,
+                                images = images,
+                                iconSize = iconSize,
+                                labelSize = labelSize,
+                                labelColor = labelColor,
+                                labelGap = labelGap,
+                                cellHeight = cellHeight,
+                                showLabel = showLabels,
+                                centerVertically = true,
+                                // 排序中不响应点击，长按拖动交给父级手势
+                                inputEnabled = inputEnabled && !ordering,
+                                onEntry = onEntry,
+                                modifier =
+                                    Modifier
+                                        .weight(1f)
+                                        .then(
+                                            if (ordering) {
+                                                Modifier.graphicsLayer {
+                                                    scaleX = 1.06f
+                                                    scaleY = 1.06f
+                                                    alpha = 1f
+                                                }
+                                            } else {
+                                                Modifier
+                                            },
+                                        ),
                             )
                         }
-                        Spacer(modifier = Modifier.height(labelGap))
-                        Text(
-                            text = entry.label,
-                            modifier = Modifier.fillMaxWidth(),
-                            color = labelColor,
-                            fontSize = labelSize,
-                            letterSpacing = 0.sp,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                    }
+                    repeat((slots - row.size).coerceAtLeast(0)) {
+                        Spacer(modifier = Modifier.weight(1f))
                     }
                 }
             }
         }
     }
 
+    @OptIn(ExperimentalFoundationApi::class)
+    @Composable
+    private fun PanelCell(
+        entry: RadialEntry,
+        images: Map<io.github.mangi.flymefreeform.config.PinnedTarget, ImageBitmap>,
+        iconSize: androidx.compose.ui.unit.Dp,
+        labelSize: androidx.compose.ui.unit.TextUnit,
+        labelColor: Color,
+        labelGap: androidx.compose.ui.unit.Dp,
+        cellHeight: androidx.compose.ui.unit.Dp,
+        showLabel: Boolean = true,
+        centerVertically: Boolean = false,
+        inputEnabled: Boolean,
+        onEntry: (RadialEntry) -> Unit,
+        onLongPress: (() -> Unit)? = null,
+        modifier: Modifier = Modifier,
+    ) {
+        Column(
+            modifier =
+                modifier
+                    .height(cellHeight)
+                    .combinedClickable(
+                        enabled = inputEnabled,
+                        onClick = { onEntry(entry) },
+                        onLongClick = onLongPress,
+                    ),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = if (centerVertically) Arrangement.Center else Arrangement.Top,
+        ) {
+            images[entry.target]?.let { image ->
+                Image(
+                    bitmap = image,
+                    contentDescription = null,
+                    modifier =
+                        Modifier
+                            .size(iconSize)
+                            .clip(RoundedCornerShape(iconSize * TOOL_ICON_CORNER_RATIO)),
+                    filterQuality = FilterQuality.High,
+                )
+            }
+            if (!showLabel) return@Column
+            Spacer(modifier = Modifier.height(labelGap))
+            Text(
+                text = entry.label,
+                modifier = Modifier.fillMaxWidth(),
+                color = labelColor,
+                fontSize = labelSize,
+                letterSpacing = 0.sp,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+
+    @OptIn(ExperimentalFoundationApi::class)
+    @Composable
+    private fun ToolStripToggle(
+        expanded: Boolean,
+        iconSize: androidx.compose.ui.unit.Dp,
+        labelSize: androidx.compose.ui.unit.TextUnit,
+        labelColor: Color,
+        cellHeight: androidx.compose.ui.unit.Dp,
+        showLabel: Boolean = true,
+        centerVertically: Boolean = false,
+        inputEnabled: Boolean,
+        onToggle: () -> Unit,
+        onLongPress: () -> Unit = {},
+        background: Color = MiuixTheme.colorScheme.surfaceVariant,
+        modifier: Modifier = Modifier,
+    ) {
+        Column(
+            modifier =
+                modifier
+                    .height(cellHeight)
+                    .combinedClickable(
+                        enabled = inputEnabled,
+                        onClick = onToggle,
+                        onLongClick = onLongPress,
+                    ),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = if (centerVertically) Arrangement.Center else Arrangement.Top,
+        ) {
+            Box(
+                modifier =
+                    Modifier
+                        .size(iconSize)
+                        .background(
+                            color = background,
+                            shape = RoundedCornerShape(percent = 50),
+                        ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = if (expanded) "\u2212" else "\u22ef",
+                    color = labelColor,
+                    fontSize = labelSize * 1.2f,
+                    maxLines = 1,
+                )
+            }
+            if (!showLabel) return@Column
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = if (expanded) "收起" else "展开",
+                modifier = Modifier.fillMaxWidth(),
+                color = labelColor,
+                fontSize = labelSize,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+            )
+        }
+    }
+
+    @Composable
+    private fun LetterIndexBar(
+        letters: List<String>,
+        color: Color,
+        modifier: Modifier = Modifier,
+        verticalInset: androidx.compose.ui.unit.Dp = 45.dp,
+        onLetter: (String) -> Unit,
+    ) {
+        val barHeight = remember { mutableIntStateOf(0) }
+        val lastPicked = remember { mutableStateOf("") }
+        val currentOnLetter by rememberUpdatedState(onLetter)
+        val rows = letters.size
+        val inset = verticalInset
+        Column(
+            modifier =
+                modifier
+                    // 撑满面板高度并让每条字母等分；上下各留一段空白，字母不贴面板边缘
+                    .fillMaxHeight()
+                    .padding(vertical = inset)
+                    .onSizeChanged { barHeight.intValue = it.height }
+                    .pointerInput(letters) {
+                        // 按 y 位置算字母下标；连续拖动时只在字母变化时触发，避免抖动
+                        fun pick(y: Float) {
+                            val height = barHeight.intValue
+                            if (rows <= 0 || height <= 0) return
+                            val index = ((y / height) * rows).toInt().coerceIn(0, rows - 1)
+                            val letter = letters[index]
+                            if (letter != lastPicked.value) {
+                                lastPicked.value = letter
+                                currentOnLetter(letter)
+                            }
+                        }
+                        detectVerticalDragGestures(
+                            onDragStart = { offset ->
+                                lastPicked.value = ""
+                                pick(offset.y)
+                            },
+                            onVerticalDrag = { change, _ -> pick(change.position.y) },
+                        )
+                    },
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            letters.forEach { letter ->
+                Box(
+                    modifier = Modifier.fillMaxWidth().weight(1f).clickable { onLetter(letter) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = letter,
+                        modifier = Modifier.fillMaxWidth(),
+                        color = color,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+    }
+
+    private val tuningObserver =
+        object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                cachedTuning = null
+                updateLayout()
+            }
+        }
+
+    private fun registerTuningObserver() {
+        try {
+            PanelTuning.KEYS.forEach { key ->
+                context.contentResolver.registerContentObserver(
+                    android.provider.Settings.Global.getUriFor(key),
+                    false,
+                    tuningObserver,
+                )
+            }
+        } catch (_: RuntimeException) {
+            // 拿不到就退回编译期默认值，不影响功能
+        }
+    }
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        registerTuningObserver()
         if (!disposed && !lifecycleRegistry.currentState.isAtLeast(Lifecycle.State.STARTED)) {
             lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         }
@@ -816,6 +1400,10 @@ internal class CornerRadialOverlayView(
     }
 
     override fun onDetachedFromWindow() {
+        try {
+            context.contentResolver.unregisterContentObserver(tuningObserver)
+        } catch (_: RuntimeException) {
+        }
         val cleanupFailure = disposeOverlay()
         super.onDetachedFromWindow()
         cleanupFailure?.let(listener::onCleanupFailed)
@@ -823,10 +1411,20 @@ internal class CornerRadialOverlayView(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        if (oldw != 0 && (oldw != w || oldh != h)) {
-            requestDismiss()
+        if (screenWidth == 0 || screenHeight == 0) {
+            // 首次布局：窗口是全屏的，这里的尺寸就是屏幕尺寸，几何全部以它为准
+            screenWidth = w
+            screenHeight = h
+            updateLayout()
             return
         }
+        if (w == screenWidth && h == screenHeight) {
+            updateLayout()
+            return
+        }
+        // 面板模式会把窗口缩到面板大小，这是预期变化，不能当成「屏幕尺寸变了」而直接关面板
+        if (panelModeState.value || windowOriginX.intValue != 0 || windowOriginY.intValue != 0) return
+        if (oldw != 0) requestDismiss()
         updateLayout()
     }
 
@@ -859,11 +1457,12 @@ internal class CornerRadialOverlayView(
     }
 
     private fun updateLayout() {
-        if (width <= 0 || height <= 0 || disposed) return
+        if (screenWidth <= 0 || screenHeight <= 0 || disposed) return
+        // 面板窗口会被缩小，几何必须一直按屏幕尺寸算，否则面板会越缩越小
         updateLayout(
-            requestedWidth = width,
-            requestedHeight = height,
-            safeInsets = currentSafeInsets(),
+            requestedWidth = screenWidth,
+            requestedHeight = screenHeight,
+            safeInsets = cachedSafeInsets ?: currentSafeInsets().also { cachedSafeInsets = it },
         )
     }
 
@@ -873,7 +1472,7 @@ internal class CornerRadialOverlayView(
         safeInsets: OverlaySafeInsets,
     ) {
         if (requestedWidth <= 0 || requestedHeight <= 0 || disposed) return
-        val radialInsets = currentRadialInsets()
+        val radialInsets = cachedRadialInsets ?: currentRadialInsets().also { cachedRadialInsets = it }
         val safeWidth = (requestedWidth - radialInsets.left - radialInsets.right).coerceAtLeast(1f)
         val safeHeight = (requestedHeight - radialInsets.top - radialInsets.bottom).coerceAtLeast(1f)
         val systemIconDiameter = systemIconSize()
@@ -889,6 +1488,9 @@ internal class CornerRadialOverlayView(
                 fontScale = resources.configuration.fontScale,
                 panelItemCount = catalog.panelApps.size,
                 anchorOnLeft = side == CornerSide.Left,
+                tuning = cachedTuning ?: PanelTuning.read(context.contentResolver).also {
+                    cachedTuning = it
+                },
             )
         metricsState.value = metrics
         layoutState.value =
@@ -942,22 +1544,8 @@ internal class CornerRadialOverlayView(
     }
 
     private fun tickVibrate() {
-        try {
-            val vibrator =
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                    val manager =
-                        context.getSystemService(android.os.VibratorManager::class.java)
-                    manager?.defaultVibrator
-                } else {
-                    @Suppress("DEPRECATION")
-                    context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
-                } ?: return
-            vibrator.vibrate(
-                android.os.VibrationEffect.createOneShot(TICK_VIBRATE_MS, vibrateAmplitude),
-            )
-        } catch (_: RuntimeException) {
-            // 触感失败不影响手势
-        }
+        // 与设置页强度条预览共用同一套参数（platform/Haptics）。
+        io.github.mangi.flymefreeform.platform.Haptics.tick(context, vibrateStrength)
     }
 
     private fun showMorePanel() {
@@ -970,13 +1558,54 @@ internal class CornerRadialOverlayView(
         listener.onMorePanelRequested()
     }
 
+    fun setWindowOrigin(x: Int, y: Int) {
+        windowOriginX.intValue = x
+        windowOriginY.intValue = y
+    }
+
+    /**
+     * 面板模式应当使用的窗口矩形（屏幕坐标）。
+     *
+     * 全屏窗口会把桌面/导航手势整块吃掉（桌面底部上滑失效），所以开面板时把窗口缩到面板大小；
+     * 上边/左右各外扩 8dp 给阴影留位置，**底边不外扩**，把屏幕底部留回给系统手势。
+     */
+    fun panelWindowRect(): android.graphics.Rect? {
+        val panel = metricsState.value?.panel ?: return null
+        val inset = 0
+        val bounds = panel.bounds
+        return android.graphics.Rect(
+            bounds.left.toInt() - inset,
+            bounds.top.toInt() - inset,
+            bounds.right.toInt() + inset,
+            bounds.bottom.toInt(),
+        )
+    }
+
     fun showBuiltInMorePanel() {
         if (disposed || !isAttachedToWindow) return
         backdropOnlyState.value = false
         panelModeState.value = true
+        panelShownAt = SystemClock.uptimeMillis()
         removeCallbacks(timeout)
         postDelayed(timeout, PANEL_TIMEOUT_MS)
         requestFocus()
+    }
+
+    /**
+     * 面板窗口在 IME 层级：回桌面 / 切应用时系统会先隐藏再显示它，
+     * 表现就是「面板先消失、又闪一下回来」。这里在失去焦点时直接收掉整块。
+     */
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        if (hasWindowFocus) {
+            hadWindowFocus = true
+            return
+        }
+        if (!hadWindowFocus) return
+        hadWindowFocus = false
+        if (!panelModeState.value || dismissing) return
+        if (SystemClock.uptimeMillis() - panelShownAt < PANEL_FOCUS_GRACE_MS) return
+        requestDismiss()
     }
 
     fun retainBackdropForPanel() {
@@ -1143,6 +1772,13 @@ internal class CornerRadialOverlayView(
                 itemCenters = emptyList(),
             )
         const val NO_SELECTION = -1
+        // 工具栏：长按 1.3 秒才进入拖动排序；格子高度 = 图标 × 1.42（图标 + 一行文字）
+        const val ORDER_LONG_PRESS_MS = 600L
+        const val STRIP_CELL_HEIGHT_RATIO = 1.75f
+        val STRIP_CELL_PADDING = 8.dp
+        val INDEX_BAR_VERTICAL_INSET = 45.dp
+        // 面板刚开时的焦点抖动窗口（系统 updateViewLayout 会先给一次 false）
+        const val PANEL_FOCUS_GRACE_MS = 600L
         const val ICON_EDGE_ALPHA = 0x24 / 255f
         // 描边固定为物理 1px 发丝线，不随密度和扇形缩放加粗。
         const val ICON_EDGE_WIDTH_PX = 1f
@@ -1158,8 +1794,13 @@ internal class CornerRadialOverlayView(
         const val PANEL_CONTENT_FADE_MILLIS = 180
         const val PANEL_CONTENT_TRANSLATION_FRACTION = 0.12f
         const val TICK_INTERVAL_MS = 80L
-        const val VIBRATE_MIN_INTERVAL_MS = 110L
-        const val TICK_VIBRATE_MS = 18L
+        const val VIBRATE_MIN_INTERVAL_MS = 70L
+        const val TOOL_STRIP_FIXED_COUNT = 4
+        const val TOOL_STRIP_SLOTS = 5
+        const val APP_GRID_COLUMNS = 5
+        val INDEX_BAR_WIDTH = 23.dp
+        val INDEX_BAR_GAP = 1.5.dp
+        const val TOOL_ICON_CORNER_RATIO = 0.24f
         const val GESTURE_TIMEOUT_MS = 5_000L
         const val PANEL_TIMEOUT_MS = 15_000L
         const val DISMISS_FALLBACK_GRACE_MS = 260L

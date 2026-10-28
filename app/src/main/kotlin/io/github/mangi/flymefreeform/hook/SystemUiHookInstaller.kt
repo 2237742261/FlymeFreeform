@@ -1,10 +1,14 @@
 package io.github.mangi.flymefreeform.hook
 
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.util.Log
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
+import io.github.mangi.flymefreeform.config.ModulePreferences
 import io.github.mangi.flymefreeform.platform.coloros.ColorOsSystemUiApplicationTarget
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -34,6 +38,7 @@ internal class SystemUiHookInstaller(
                     if (context != null && bound.compareAndSet(false, true)) {
                         startInputMonitor(context)
                         startKeepAwakeMonitor(context)
+                        registerSettingsReceiver(context)
                     }
                     result
                 }
@@ -57,6 +62,25 @@ internal class SystemUiHookInstaller(
             module.log(Log.WARN, TAG, "SYSTEMUI_CORNER_SPY_START_FAILED", exception)
         } catch (exception: LinkageError) {
             module.log(Log.WARN, TAG, "SYSTEMUI_CORNER_SPY_LINKAGE_FAILED", exception)
+        }
+    }
+
+    // 设置页的「临时常亮」/「轮盘震动」改动靠这条广播热生效（跨进程远程偏好不会自己回调）。
+    private fun registerSettingsReceiver(context: Context) {
+        try {
+            context.registerReceiver(
+                object : BroadcastReceiver() {
+                    override fun onReceive(receiverContext: Context?, intent: Intent?) {
+                        // 所有设置项统一由 ProcessConfiguration 解包，避免各进程只抄一部分字段
+                        configuration.applySettingsBroadcast(intent ?: return)
+                    }
+                },
+                IntentFilter(ModulePreferences.ACTION_PINNED_TARGETS_CHANGED),
+                Context.RECEIVER_EXPORTED,
+            )
+            module.log(Log.INFO, TAG, "SYSTEMUI_SETTINGS_RECEIVER_READY")
+        } catch (exception: RuntimeException) {
+            module.log(Log.WARN, TAG, "SYSTEMUI_SETTINGS_RECEIVER_FAILED", exception)
         }
     }
 
