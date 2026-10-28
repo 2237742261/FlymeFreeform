@@ -137,7 +137,7 @@ internal class CornerRadialOverlayView(
     private var vibrateEnabled = false
     private var lastVibratedIndex: Int? = null
     private var lastVibrateUptime = 0L
-    private var vibrateAmplitude = 185
+    private var vibrateStrength = ModulePreferences.DEFAULT_RADIAL_VIBRATE_STRENGTH
     private val timeout = Runnable(::requestDismiss)
     private val dismissFallback = Runnable(::completeRadialExit)
 
@@ -169,10 +169,7 @@ internal class CornerRadialOverlayView(
     /** 由协调器在呼出前写入当前震动配置（关=不震）。 */
     fun applyVibration(enabled: Boolean, strength: Int) {
         vibrateEnabled = enabled
-        // 抬底 + 线性映射：60% ≈ 185 振幅（原来只有 153，配极短时长几乎感觉不到）
-        vibrateAmplitude =
-            (80 + ModulePreferences.coerceRadialVibrateStrength(strength) * 175 / 100)
-                .coerceIn(80, 255)
+        vibrateStrength = ModulePreferences.coerceRadialVibrateStrength(strength)
     }
 
     fun begin(
@@ -955,25 +952,8 @@ internal class CornerRadialOverlayView(
     }
 
     private fun tickVibrate() {
-        try {
-            val vibrator =
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                    val manager =
-                        context.getSystemService(android.os.VibratorManager::class.java)
-                    manager?.defaultVibrator
-                } else {
-                    @Suppress("DEPRECATION")
-                    context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
-                } ?: return
-            // 不要用 USAGE_TOUCH / PRIMITIVE_CLICK：系统「触感反馈」关闭时（本机
-            // haptic_feedback_enabled=0）VibratorManagerService 会把这两类整体过滤掉，
-            // 表现就是明明开关开着却完全不震。用极短 oneShot + 默认 usage，保证有反馈。
-            vibrator.vibrate(
-                android.os.VibrationEffect.createOneShot(TICK_VIBRATE_MS, vibrateAmplitude),
-            )
-        } catch (_: RuntimeException) {
-            // 触感失败不影响手势
-        }
+        // 与设置页强度条预览共用同一套参数（platform/Haptics）。
+        io.github.mangi.flymefreeform.platform.Haptics.tick(context, vibrateStrength)
     }
 
     private fun showMorePanel() {
@@ -1175,7 +1155,6 @@ internal class CornerRadialOverlayView(
         const val PANEL_CONTENT_TRANSLATION_FRACTION = 0.12f
         const val TICK_INTERVAL_MS = 80L
         const val VIBRATE_MIN_INTERVAL_MS = 70L
-        const val TICK_VIBRATE_MS = 20L
         const val GESTURE_TIMEOUT_MS = 5_000L
         const val PANEL_TIMEOUT_MS = 15_000L
         const val DISMISS_FALLBACK_GRACE_MS = 260L

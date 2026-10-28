@@ -97,6 +97,8 @@ internal class SystemUiKeepAwakeMonitor(
         }
 
     private fun tick() {
+        // 息屏时没必要每拍都 fork 一次 dumpsys（息屏的释放由 SCREEN_OFF 广播负责）。
+        if (!powerManager.isInteractive) return
         val state = readDisplayPolicy() ?: return
         when {
             state == STATE_DIM -> dimmed = true
@@ -351,8 +353,8 @@ internal class SystemUiKeepAwakeMonitor(
         const val DUMPSYS_COMMAND = "/system/bin/dumpsys display"
         const val GREP_COMMAND = "/system/bin/grep"
         const val WAKE_LOCK_TAG = "flymefreeform:keep"
-        const val POLL_INTERVAL_MS = 700L
-        const val FOREGROUND_POLL_MS = 1_000L
+        const val POLL_INTERVAL_MS = 1_200L
+        const val FOREGROUND_POLL_MS = 2_000L
         const val ACTIVITY_DUMPSYS = "/system/bin/dumpsys activity activities"
         val AFFINITY_PATTERN = Regex("A=[0-9]+:([A-Za-z0-9_.]+)")
         val COMPONENT_PATTERN = Regex("I=([A-Za-z0-9_.]+)")
