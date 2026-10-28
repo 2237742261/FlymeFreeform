@@ -119,7 +119,7 @@ internal class ColorOsAllAppsWindow(
     fun show() {
         check(!attached && !closed)
         val params = WindowManager.LayoutParams(
-            -1, -1, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            -1, -1, WindowManager.LayoutParams.TYPE_INPUT_METHOD_DIALOG,
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT,
         ).apply {

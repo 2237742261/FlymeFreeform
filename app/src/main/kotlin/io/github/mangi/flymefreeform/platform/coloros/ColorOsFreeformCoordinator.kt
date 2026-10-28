@@ -605,7 +605,8 @@ internal class ColorOsFreeformCoordinator(
     }
 
     private fun createOverlayParams(focusable: Boolean): WindowManager.LayoutParams {
-        // 非聚焦窗不带 ALT 时位于输入法上方；聚焦面板则需要 ALT 保持相同层级。
+        // 层级：2012(INPUT_METHOD_DIALOG) 刚好压在输入法(2011)之上、状态栏之下；
+        // 用 2038(APPLICATION_OVERLAY) 时轮盘会被弹出的输入法整块盖住（本机实测）。
         val inputFlags =
             if (focusable) {
                 WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
@@ -616,7 +617,7 @@ internal class ColorOsFreeformCoordinator(
         return WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            OVERLAY_WINDOW_TYPE,
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
@@ -728,6 +729,8 @@ internal class ColorOsFreeformCoordinator(
 
     private companion object {
         const val CATALOG_THREAD_NAME = "FlymeFreeform-Catalog"
+        // 2012：压在输入法之上、状态栏之下（2038 会被输入法盖住）
+        val OVERLAY_WINDOW_TYPE = WindowManager.LayoutParams.TYPE_INPUT_METHOD_DIALOG
         const val OVERLAY_FAILURE_LOG_INTERVAL_MS = 10_000L
         val CRITICAL_PACKAGES =
             setOf(
