@@ -963,24 +963,12 @@ internal class CornerRadialOverlayView(
                     @Suppress("DEPRECATION")
                     context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
                 } ?: return
-            // 用系统「点击」原语 + 触摸用途属性：比 createOneShot 更短促，
-            // 也不会被系统按通知类触感削弱；失败再回退成等幅短震。
-            try {
-                val scale = (vibrateAmplitude / 255f).coerceIn(0.15f, 1f)
-                val effect =
-                    android.os.VibrationEffect.startComposition()
-                        .addPrimitive(android.os.VibrationEffect.Composition.PRIMITIVE_CLICK, scale, 0)
-                        .compose()
-                val attributes =
-                    android.os.VibrationAttributes.createForUsage(
-                        android.os.VibrationAttributes.USAGE_TOUCH,
-                    )
-                vibrator.vibrate(effect, attributes)
-            } catch (_: Throwable) {
-                vibrator.vibrate(
-                    android.os.VibrationEffect.createOneShot(TICK_VIBRATE_MS, vibrateAmplitude),
-                )
-            }
+            // 不要用 USAGE_TOUCH / PRIMITIVE_CLICK：系统「触感反馈」关闭时（本机
+            // haptic_feedback_enabled=0）VibratorManagerService 会把这两类整体过滤掉，
+            // 表现就是明明开关开着却完全不震。用极短 oneShot + 默认 usage，保证有反馈。
+            vibrator.vibrate(
+                android.os.VibrationEffect.createOneShot(TICK_VIBRATE_MS, vibrateAmplitude),
+            )
         } catch (_: RuntimeException) {
             // 触感失败不影响手势
         }
@@ -1185,7 +1173,7 @@ internal class CornerRadialOverlayView(
         const val PANEL_CONTENT_TRANSLATION_FRACTION = 0.12f
         const val TICK_INTERVAL_MS = 80L
         const val VIBRATE_MIN_INTERVAL_MS = 70L
-        const val TICK_VIBRATE_MS = 12L
+        const val TICK_VIBRATE_MS = 10L
         const val GESTURE_TIMEOUT_MS = 5_000L
         const val PANEL_TIMEOUT_MS = 15_000L
         const val DISMISS_FALLBACK_GRACE_MS = 260L
