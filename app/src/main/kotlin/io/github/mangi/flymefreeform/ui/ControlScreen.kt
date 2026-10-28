@@ -487,7 +487,21 @@ private fun vibratePreview(context: android.content.Context, strength: Int) {
             } ?: return
         val amplitude =
             (1 + ModulePreferences.coerceRadialVibrateStrength(strength) * 254 / 100).coerceIn(1, 255)
-        vibrator.vibrate(android.os.VibrationEffect.createOneShot(VIBRATE_PREVIEW_MS, amplitude))
+        try {
+            val scale = (amplitude / 255f).coerceIn(0.15f, 1f)
+            val effect =
+                android.os.VibrationEffect.startComposition()
+                    .addPrimitive(android.os.VibrationEffect.Composition.PRIMITIVE_CLICK, scale, 0)
+                    .compose()
+            vibrator.vibrate(
+                effect,
+                android.os.VibrationAttributes.createForUsage(
+                    android.os.VibrationAttributes.USAGE_TOUCH,
+                ),
+            )
+        } catch (_: Throwable) {
+            vibrator.vibrate(android.os.VibrationEffect.createOneShot(VIBRATE_PREVIEW_MS, amplitude))
+        }
     } catch (_: RuntimeException) {
         // 预览失败不影响设置
     }
