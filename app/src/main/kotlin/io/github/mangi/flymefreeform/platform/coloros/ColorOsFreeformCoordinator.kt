@@ -113,6 +113,23 @@ internal class ColorOsFreeformCoordinator(
                                 ModulePreferences.EXTRA_INNER_PINS_SAVED,
                                 configuration.snapshot.innerPinsSaved,
                             ),
+                        radialVibrateEnabled =
+                            intent.getBooleanExtra(
+                                ModulePreferences.EXTRA_RADIAL_VIBRATE_ENABLED,
+                                configuration.snapshot.radialVibrateEnabled,
+                            ),
+                        radialVibrateStrength =
+                            ModulePreferences.coerceRadialVibrateStrength(
+                                intent.getIntExtra(
+                                    ModulePreferences.EXTRA_RADIAL_VIBRATE_STRENGTH,
+                                    configuration.snapshot.radialVibrateStrength,
+                                ),
+                            ),
+                        keepAwakeEnabled =
+                            intent.getBooleanExtra(
+                                ModulePreferences.EXTRA_KEEP_AWAKE_ENABLED,
+                                configuration.snapshot.keepAwakeEnabled,
+                            ),
                     ),
                 )
             }

@@ -155,7 +155,10 @@ internal class FrameworkConnectionRepository(private val context: Context) {
                 if (next.pinsSaved != previous.settings.pinsSaved ||
                     next.pinnedTargets != previous.settings.pinnedTargets ||
                     next.innerPinsSaved != previous.settings.innerPinsSaved ||
-                    next.innerPinnedTargets != previous.settings.innerPinnedTargets
+                    next.innerPinnedTargets != previous.settings.innerPinnedTargets ||
+                    next.radialVibrateEnabled != previous.settings.radialVibrateEnabled ||
+                    next.radialVibrateStrength != previous.settings.radialVibrateStrength ||
+                    next.keepAwakeEnabled != previous.settings.keepAwakeEnabled
                 ) {
                     notifyPinnedTargetsChanged(next)
                 }
@@ -181,10 +184,20 @@ internal class FrameworkConnectionRepository(private val context: Context) {
             )
             putExtra(ModulePreferences.EXTRA_INNER_PINS_SAVED, settings.innerPinsSaved)
             putExtra(ModulePreferences.EXTRA_MODULE_ENABLED, settings.enabled)
+            putExtra(
+                ModulePreferences.EXTRA_RADIAL_VIBRATE_ENABLED,
+                settings.radialVibrateEnabled,
+            )
+            putExtra(
+                ModulePreferences.EXTRA_RADIAL_VIBRATE_STRENGTH,
+                settings.radialVibrateStrength,
+            )
+            putExtra(ModulePreferences.EXTRA_KEEP_AWAKE_ENABLED, settings.keepAwakeEnabled)
         }
         try {
             context.sendBroadcast(intent.setPackage("android"))
             context.sendBroadcast(intent.setPackage("com.coloros.smartsidebar"))
+            context.sendBroadcast(intent.setPackage("com.android.systemui"))
         } catch (_: RuntimeException) {
             // Remote preference commit remains authoritative if a target process is unavailable.
         }
