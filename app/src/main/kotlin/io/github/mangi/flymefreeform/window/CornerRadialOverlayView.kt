@@ -639,19 +639,30 @@ internal class CornerRadialOverlayView(
             alpha = alpha,
         )
         val rimWidth = diameter * MORE_RIM_WIDTH_FRACTION
-        drawCircle(
-            brush = Brush.verticalGradient(
-                0f to colors.moreRim,
-                0.5f to colors.moreRim.copy(alpha = 0f),
-                1f to colors.moreRim,
-                startY = centerY - radius,
-                endY = centerY + radius,
-            ),
-            radius = radius - rimWidth / 2f,
-            center = Offset(centerX, centerY),
-            alpha = alpha,
-            style = Stroke(width = rimWidth),
-        )
+        if (colors.moreRimSolid) {
+            // 深色：一整圈纯色描边（原来的 verticalGradient 在深色下只剩上、下两个半圈白边）。
+            drawCircle(
+                color = colors.moreRim,
+                radius = radius - rimWidth / 2f,
+                center = Offset(centerX, centerY),
+                alpha = alpha,
+                style = Stroke(width = rimWidth),
+            )
+        } else {
+            drawCircle(
+                brush = Brush.verticalGradient(
+                    0f to colors.moreRim,
+                    0.5f to colors.moreRim.copy(alpha = 0f),
+                    1f to colors.moreRim,
+                    startY = centerY - radius,
+                    endY = centerY + radius,
+                ),
+                radius = radius - rimWidth / 2f,
+                center = Offset(centerX, centerY),
+                alpha = alpha,
+                style = Stroke(width = rimWidth),
+            )
+        }
         for (offset in -1..1) {
             drawCircle(
                 color = colors.moreDot,

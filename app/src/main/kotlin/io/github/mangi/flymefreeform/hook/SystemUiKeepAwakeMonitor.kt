@@ -48,6 +48,9 @@ internal class SystemUiKeepAwakeMonitor(
     private var params: WindowManager.LayoutParams? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastLogAt = 0L
+    // 申请常亮时的前台应用；切到别的应用就立刻释放，让系统重新开始息屏计时。
+    private var keepPackage: String? = null
+    private var lastForegroundCheckAt = 0L
 
     private val screenOffReceiver =
         object : BroadcastReceiver() {
@@ -82,6 +85,7 @@ internal class SystemUiKeepAwakeMonitor(
                 try {
                     if (configuration.snapshot.keepAwakeEnabled) {
                         tick()
+                        watchForegroundApp()
                     } else if (bubble != null) {
                         dismissBubble()
                     }
@@ -237,6 +241,7 @@ internal class SystemUiKeepAwakeMonitor(
 
     private fun keepScreenOn() {
         try {
+            keepPackage = foregroundPackage()
             val lock =
                 wakeLock ?: powerManager
                     .newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, WAKE_LOCK_TAG)
@@ -245,18 +250,62 @@ internal class SystemUiKeepAwakeMonitor(
             if (!lock.isHeld) {
                 lock.acquire()
             }
-            module.log(Log.DEBUG, TAG, "KEEP_SCREEN_ON_ACQUIRED")
+            module.log(Log.INFO, TAG, "KEEP_SCREEN_ON_ACQUIRED app=$keepPackage")
         } catch (exception: RuntimeException) {
             logThrottled("KEEP_SCREEN_ON_FAILED", exception)
         }
     }
 
+    // 常亮期间盯住前台应用：换成别的应用就释放，等价于「重新进入息屏计时」。
+    private fun watchForegroundApp() {
+        val lock = wakeLock ?: return
+        if (!lock.isHeld) return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastForegroundCheckAt < FOREGROUND_POLL_MS) return
+        lastForegroundCheckAt = now
+        val current = foregroundPackage() ?: return
+        val anchor = keepPackage ?: return
+        if (current != anchor) {
+            module.log(Log.INFO, TAG, "KEEP_SCREEN_ON_APP_SWITCHED $anchor -> $current RELEASE")
+            releaseScreenOn()
+        }
+    }
+
+    // 顶层任务里的包名（A=uid:pkg）；拿不到就返回 null，避免误判释放。
+    private fun foregroundPackage(): String? {
+        val process =
+            try {
+                Runtime.getRuntime().exec(
+                    arrayOf(
+                        "/system/bin/sh",
+                        "-c",
+                        "$ACTIVITY_DUMPSYS 2>/dev/null | $GREP_COMMAND -m1 -E 'A=[0-9]+:'",
+                    ),
+                )
+            } catch (exception: Exception) {
+                logThrottled("KEEP_AWAKE_FOREGROUND_EXEC_FAILED", exception)
+                return null
+            }
+        val line =
+            try {
+                BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
+                    reader.readLine().orEmpty()
+                }
+            } catch (exception: Exception) {
+                null
+            }
+        process.destroy()
+        val match = line?.let { FOREGROUND_PATTERN.find(it) } ?: return null
+        return match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() }
+    }
+
     private fun releaseScreenOn() {
         try {
+            keepPackage = null
             val lock = wakeLock ?: return
             if (lock.isHeld) {
                 lock.release()
-                module.log(Log.DEBUG, TAG, "KEEP_SCREEN_ON_RELEASED")
+                module.log(Log.INFO, TAG, "KEEP_SCREEN_ON_RELEASED")
             }
         } catch (exception: RuntimeException) {
             logThrottled("KEEP_SCREEN_ON_RELEASE_FAILED", exception)
@@ -297,6 +346,9 @@ internal class SystemUiKeepAwakeMonitor(
         const val GREP_COMMAND = "/system/bin/grep"
         const val WAKE_LOCK_TAG = "flymefreeform:keep"
         const val POLL_INTERVAL_MS = 700L
+        const val FOREGROUND_POLL_MS = 1_000L
+        const val ACTIVITY_DUMPSYS = "/system/bin/dumpsys activity activities"
+        val FOREGROUND_PATTERN = Regex("A=\\d+:([A-Za-z0-9_.]+)")
         const val BUBBLE_AUTO_DISMISS_MS = 6_000L
         const val BUBBLE_SIZE_DP = 44
         const val BUBBLE_MARGIN_X_DP = 12

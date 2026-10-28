@@ -6,7 +6,7 @@ internal object RadialIconGeometry {
     private const val BASE_RADIUS_DP = 266f
     private const val BASE_ICON_DIAMETER_DP = 51f
     private const val BASE_ITEM_PADDING_DP = 3.25f
-    private const val RING_GAP_DP = 11f
+    private const val RING_GAP_DP = 9.5f
 
     fun fit(
         width: Float,
