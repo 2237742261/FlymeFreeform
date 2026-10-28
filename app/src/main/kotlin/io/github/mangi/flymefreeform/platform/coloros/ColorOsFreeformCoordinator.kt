@@ -78,7 +78,7 @@ internal class ColorOsFreeformCoordinator(
                 entryCatalog.invalidate()
                 if (lastSettings.enabled) {
                     appCatalog.refresh(lastSettings)
-                    if (lastSettings.pinnedTargets.any { it is PinnedTarget.Sidebar }) entryCatalog.refresh()
+                    if (lastSettings.hasSidebarPins) entryCatalog.refresh()
                 }
             }
         }
@@ -191,11 +191,13 @@ internal class ColorOsFreeformCoordinator(
     private fun applySettings(settings: ModuleSettingsSnapshot) {
         val selectionChanged =
             settings.pinsSaved != lastSettings.pinsSaved ||
-                settings.pinnedTargets != lastSettings.pinnedTargets
+                settings.pinnedTargets != lastSettings.pinnedTargets ||
+                settings.innerPinsSaved != lastSettings.innerPinsSaved ||
+                settings.innerPinnedTargets != lastSettings.innerPinnedTargets
         lastSettings = settings
         if (environmentState.isGestureAllowed(refreshKeyguard = true) && (settings.leftCornerEnabled || settings.rightCornerEnabled)) {
             val resuming = !pointerRegistered
-            if ((resuming || selectionChanged) && settings.pinnedTargets.any { it is PinnedTarget.Sidebar }) entryCatalog.refresh()
+            if ((resuming || selectionChanged) && settings.hasSidebarPins) entryCatalog.refresh()
             registerPointerListener()
             if (resuming || selectionChanged || !catalogSnapshot.matches(settings) || catalogSnapshot.radialApps.isEmpty()) {
                 appCatalog.refresh(settings, reloadApps = resuming || selectionChanged || catalogSnapshot.radialApps.isEmpty())
@@ -243,7 +245,7 @@ internal class ColorOsFreeformCoordinator(
             register.invoke(windowManagerService, listener, Display.DEFAULT_DISPLAY)
             pointerListener = listener
             pointerRegistered = true
-            logger(Log.INFO, "SYSTEM_POINTER_LISTENER_REGISTERED", null)
+            logger(Log.DEBUG, "SYSTEM_POINTER_LISTENER_REGISTERED", null)
         } catch (exception: ReflectiveOperationException) {
             logger(Log.WARN, "SYSTEM_POINTER_LISTENER_UNAVAILABLE", exception)
         } catch (exception: RuntimeException) {
@@ -508,7 +510,8 @@ internal class ColorOsFreeformCoordinator(
                     if (generation == entryLaunchGeneration && overlay == null && isGestureEnvironmentAllowed()) {
                         entryCatalog.launch(target) {
                             generation == entryLaunchGeneration && overlay == null && isGestureEnvironmentAllowed() &&
-                                target in lastSettings.pinnedTargets && focusedWindow() === focus &&
+                                (target in lastSettings.pinnedTargets ||
+                                    target in lastSettings.innerPinnedTargets) && focusedWindow() === focus &&
                                 context.getSystemService(android.hardware.display.DisplayManager::class.java)
                                     .getDisplay(Display.DEFAULT_DISPLAY)?.rotation == rotation
                         }

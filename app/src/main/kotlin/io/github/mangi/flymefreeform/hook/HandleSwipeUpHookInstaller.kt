@@ -72,7 +72,7 @@ internal class HandleSwipeUpHookInstaller(
                             flexibleState = if (ordinary) ORDINARY_FLEXIBLE_STATE else UNKNOWN_STATE,
                         )
                     if (mappedMode != originalMode && remapLogged.compareAndSet(false, true)) {
-                        module.log(Log.INFO, TAG, "HANDLE_SWIPE_UP_MODE_REMAPPED")
+                        module.log(Log.DEBUG, TAG, "HANDLE_SWIPE_UP_MODE_REMAPPED")
                     }
                     mappedMode
                 }
@@ -102,7 +102,7 @@ internal class HandleSwipeUpHookInstaller(
                                 false
                             }
                         if (!ordinary) return@intercept result
-                        module.log(Log.INFO, TAG, "HANDLE_SWIPE_UP_EARLY_TRIGGER")
+                        module.log(Log.DEBUG, TAG, "HANDLE_SWIPE_UP_EARLY_TRIGGER")
                         SWITCH_TO_MINI_MODE
                     }
                 module.log(Log.INFO, TAG, "HANDLE_SWIPE_UP_QUICK_SWIP_HOOK_INSTALLED")

@@ -8,3 +8,4 @@ release.keystore
 *.apk
 captures/
 docs/images/preview.gif
+!apk/*.apk

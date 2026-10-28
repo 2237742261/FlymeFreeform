@@ -32,7 +32,7 @@ internal data class ColorOsLauncherInputTarget(
             }
             if (cached != null) {
                 try {
-                    return bind(loader, cached).also { report("LAUNCHER_DEX_CACHE_HIT", null) }
+                    return bind(loader, cached)
                 } catch (exception: ReflectiveOperationException) {
                     report("LAUNCHER_DEX_CACHE_REJECTED", exception)
                 } catch (exception: IllegalArgumentException) {

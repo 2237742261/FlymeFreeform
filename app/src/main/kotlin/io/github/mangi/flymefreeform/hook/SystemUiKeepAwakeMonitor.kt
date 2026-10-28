@@ -186,7 +186,7 @@ internal class SystemUiKeepAwakeMonitor(
                 windowManager.addView(view, layoutParams)
                 bubble = view
                 params = layoutParams
-                module.log(Log.INFO, TAG, "KEEP_AWAKE_BUBBLE_SHOW")
+                module.log(Log.DEBUG, TAG, "KEEP_AWAKE_BUBBLE_SHOW")
             } catch (exception: RuntimeException) {
                 module.log(Log.WARN, TAG, "KEEP_AWAKE_BUBBLE_ADD_FAILED", exception)
                 return@post
@@ -229,7 +229,7 @@ internal class SystemUiKeepAwakeMonitor(
             vibrator.vibrate(
                 VibrationEffect.createOneShot(VIBRATE_DURATION_MS, VIBRATE_AMPLITUDE),
             )
-            module.log(Log.INFO, TAG, "KEEP_AWAKE_VIBRATE")
+            module.log(Log.DEBUG, TAG, "KEEP_AWAKE_VIBRATE")
         } catch (exception: RuntimeException) {
             logThrottled("KEEP_AWAKE_VIBRATE_FAILED", exception)
         }
@@ -245,7 +245,7 @@ internal class SystemUiKeepAwakeMonitor(
             if (!lock.isHeld) {
                 lock.acquire()
             }
-            module.log(Log.INFO, TAG, "KEEP_SCREEN_ON_ACQUIRED")
+            module.log(Log.DEBUG, TAG, "KEEP_SCREEN_ON_ACQUIRED")
         } catch (exception: RuntimeException) {
             logThrottled("KEEP_SCREEN_ON_FAILED", exception)
         }
@@ -256,7 +256,7 @@ internal class SystemUiKeepAwakeMonitor(
             val lock = wakeLock ?: return
             if (lock.isHeld) {
                 lock.release()
-                module.log(Log.INFO, TAG, "KEEP_SCREEN_ON_RELEASED")
+                module.log(Log.DEBUG, TAG, "KEEP_SCREEN_ON_RELEASED")
             }
         } catch (exception: RuntimeException) {
             logThrottled("KEEP_SCREEN_ON_RELEASE_FAILED", exception)

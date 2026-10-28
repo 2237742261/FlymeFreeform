@@ -20,7 +20,7 @@ class ModuleMain : XposedModule() {
     override fun onModuleLoaded(param: XposedModuleInterface.ModuleLoadedParam) {
         processName = param.processName
         if (!isExpectedProcess(param)) {
-            log(Log.WARN, TAG, "MODULE_SKIPPED_UNEXPECTED_PROCESS")
+            log(Log.DEBUG, TAG, "MODULE_SKIPPED_UNEXPECTED_PROCESS")
             detach()
             return
         }
