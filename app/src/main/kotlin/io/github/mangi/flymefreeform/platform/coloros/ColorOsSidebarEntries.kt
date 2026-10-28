@@ -50,10 +50,26 @@ internal class ColorOsSidebarEntries(private val context: Context, loader: Class
     private val getResident = handlerClass.getMethod("getMResidentProcessHandler")
     private val getState = getMain.returnType.getMethod("getMState")
 
-    fun ready(): Boolean = active.call(null) != null && getMain.call(handler) != null &&
-        (getResident.call(handler) as? IInterface)?.asBinder()?.isBinderAlive == true
+    /**
+     * 原作者把「面板已创建 + 常驻端存活」当硬门槛，但轮盘直接点工具时原生侧边栏并没有被展开，
+     * 这些条件在真实调用路径上恒不成立，请求会被无声拖到 7 秒超时（表现就是「点了没反应」）。
+     * 现在只要求数据层可用（EntryBeanHelper），其余降级为诊断信息。
+     */
+    fun ready(): Boolean = try {
+        active.call(null) != null
+    } catch (_: Exception) {
+        false
+    }
 
-    fun sidebarHidden(): Boolean = getMain.call(handler)?.let { (getState.call(it) as? Enum<*>)?.name } == "FLOAT_BAR_SHOWING"
+    /** 面板状态只用于排查，不再作为执行前置条件。 */
+    fun diagnostics(): String = try {
+        val view = getMain.call(handler)
+        "helper=${active.call(null) != null} main=${view != null}" +
+            " resident=${(getResident.call(handler) as? IInterface)?.asBinder()?.isBinderAlive == true}" +
+            " state=${view?.let { (getState.call(it) as? Enum<*>)?.name }}"
+    } catch (exception: Exception) {
+        "error=${exception.javaClass.simpleName}"
+    }
 
     /** 与原生全部面板一致，在工作线程获取目录；图标压到固定上限后才跨进程传输。 */
     fun load(userId: Int): List<SelectableEntry> = entries(includeClones = true).mapNotNull { bean ->

@@ -123,7 +123,8 @@ internal class ColorOsSidebarEntryEndpoint(
                 val entries = request.prepared ?: return true
                 request.prepared = null
                 val target = request.target ?: return true
-                if (SystemClock.uptimeMillis() >= request.deadline || !launchAllowed(target) || !entries.sidebarHidden()) {
+                if (SystemClock.uptimeMillis() >= request.deadline || !launchAllowed(target)) {
+                    log(Log.WARN, "SIDEBAR_LAUNCH_BLOCKED deadline_or_pin ${entries.diagnostics()}", null)
                     finish(request)
                     return true
                 }
@@ -133,7 +134,15 @@ internal class ColorOsSidebarEntryEndpoint(
                         if (current !== request || !request.active.get()) return@post
                         try {
                             val dispatched = bean != null && SystemClock.uptimeMillis() < request.deadline &&
-                                launchAllowed(target) && entries.sidebarHidden() && entries.launch(target, bean)
+                                launchAllowed(target) && entries.launch(target, bean)
+                            if (!dispatched) {
+                                log(
+                                    Log.WARN,
+                                    "SIDEBAR_ENTRY_NOT_DISPATCHED bean=${bean != null} " +
+                                        "alias=${target.alias} ${entries.diagnostics()}",
+                                    null,
+                                )
+                            }
                             execute(request) {
                                 send(request, SidebarEntryProtocol.message(
                                     if (dispatched) SidebarEntryProtocol.DISPATCHED else SidebarEntryProtocol.FAILED, request.id,
@@ -175,6 +184,10 @@ internal class ColorOsSidebarEntryEndpoint(
         try {
             if (!allowed()) { finish(request); return }
             if (!entries.ready()) {
+                if (!request.standbyLogged) {
+                    request.standbyLogged = true
+                    log(Log.DEBUG, "SIDEBAR_ENTRY_HELPER_PENDING ${entries.diagnostics()}", null)
+                }
                 handler.postDelayed({ prepare(request, entries) }, 50L)
                 return
             }
@@ -192,8 +205,13 @@ internal class ColorOsSidebarEntryEndpoint(
                     handler.post { finish(request) }
                 }
             } else {
-                if (!launchAllowed(target) || !entries.sidebarHidden()) { finish(request); return }
+                if (!launchAllowed(target)) {
+                    log(Log.WARN, "SIDEBAR_LAUNCH_BLOCKED pin_removed ${entries.diagnostics()}", null)
+                    finish(request)
+                    return
+                }
                 request.prepared = entries
+                log(Log.DEBUG, "SIDEBAR_ENTRY_PREPARED kind=${target.kind} ${entries.diagnostics()}", null)
                 execute(request) { send(request, SidebarEntryProtocol.message(SidebarEntryProtocol.PREPARED, request.id)) }
             }
         } catch (exception: Exception) { report(exception); finish(request) }
@@ -205,9 +223,21 @@ internal class ColorOsSidebarEntryEndpoint(
         service.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == false &&
         Settings.Secure.getInt(service.contentResolver, "edge_panel_toggle", -1) == 1
 
-    private fun launchAllowed(target: PinnedTarget.Sidebar): Boolean = allowed() &&
-        target.userId == (Process.myUid() / 100_000) && configuration.snapshot.enabled &&
-        target in configuration.snapshot.pinnedTargets
+    private fun launchAllowed(target: PinnedTarget.Sidebar): Boolean {
+        val snapshot = configuration.snapshot
+        val pinned =
+            target in snapshot.pinnedTargets || target in snapshot.innerPinnedTargets
+        val ok = allowed() && target.userId == (Process.myUid() / 100_000) && snapshot.enabled && pinned
+        if (!ok) {
+            log(
+                Log.WARN,
+                "SIDEBAR_LAUNCH_BLOCKED allowed=${allowed()} user=${target.userId}" +
+                    " enabled=${snapshot.enabled} pinned=$pinned",
+                null,
+            )
+        }
+        return ok
+    }
 
     private fun execute(request: Request, action: () -> Unit) {
         try {
@@ -257,6 +287,7 @@ internal class ColorOsSidebarEntryEndpoint(
     private inner class Request(val id: String, val deadline: Long, val reply: Messenger, val target: PinnedTarget.Sidebar?) {
         val active = AtomicBoolean(true)
         var linked = false
+        var standbyLogged = false
         var prepared: ColorOsSidebarEntries? = null
         val timeout = Runnable { finish(this) }
         val death = IBinder.DeathRecipient { handler.post { finish(this) } }

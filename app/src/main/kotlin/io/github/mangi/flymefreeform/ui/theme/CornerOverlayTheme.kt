@@ -1,6 +1,7 @@
 package io.github.mangi.flymefreeform.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
@@ -38,7 +39,7 @@ private val LightRadialItemColors =
         moreShadowOffsetFraction = 0.03f,
     )
 
-// 深色下按钮外沿是向下的浅色微光而不是阴影；应用图标压暗以免在黑色遮罩上刺眼。
+// 深色下不再给「更多」加外沿微光（原厂那圈白色低透明度在大图标上很突兀）；应用图标压暗以免在黑色遮罩上刺眼。
 private val DarkRadialItemColors =
     RadialItemColors(
         iconShadeAlpha = 0x1F / 255f,
@@ -46,9 +47,9 @@ private val DarkRadialItemColors =
         morePlateBottom = Color(0xFF282828),
         moreRim = Color.White.copy(alpha = 0.12f),
         moreDot = Color(0xFFE9E9E9),
-        moreShadow = Color.White.copy(alpha = 0.08f),
-        moreShadowSpreadFraction = 0.12f,
-        moreShadowOffsetFraction = 0.06f,
+        moreShadow = Color.Transparent,
+        moreShadowSpreadFraction = 0f,
+        moreShadowOffsetFraction = 0f,
     )
 
 internal val LocalRadialItemColors = staticCompositionLocalOf { LightRadialItemColors }
@@ -56,7 +57,12 @@ internal val LocalRadialItemColors = staticCompositionLocalOf { LightRadialItemC
 @Composable
 internal fun CornerOverlayTheme(content: @Composable () -> Unit) {
     // 深浅色只在这里解析一次，Miuix 配色与扇形配色共用同一结果。
-    val dark = isSystemInDarkTheme()
+    val context = LocalContext.current
+    // 轮盘窗口在 system_server 里创建，Compose 的 LocalConfiguration 不保证跟随系统切换；
+    // 读不到就会在深色下错用浅色配色（连带出现「更多」的阴影）。
+    val dark =
+        (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
     val controller =
         remember(dark) {
             ThemeController(

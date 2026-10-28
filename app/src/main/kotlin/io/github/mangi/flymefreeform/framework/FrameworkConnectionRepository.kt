@@ -153,7 +153,9 @@ internal class FrameworkConnectionRepository(private val context: Context) {
                 activeConnection = connection.copy(confirmedState = confirmed)
                 mutableState.value = confirmed
                 if (next.pinsSaved != previous.settings.pinsSaved ||
-                    next.pinnedTargets != previous.settings.pinnedTargets
+                    next.pinnedTargets != previous.settings.pinnedTargets ||
+                    next.innerPinsSaved != previous.settings.innerPinsSaved ||
+                    next.innerPinnedTargets != previous.settings.innerPinnedTargets
                 ) {
                     notifyPinnedTargetsChanged(next)
                 }

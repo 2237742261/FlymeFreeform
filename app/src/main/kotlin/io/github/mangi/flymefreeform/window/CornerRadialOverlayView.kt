@@ -611,20 +611,22 @@ internal class CornerRadialOverlayView(
     ) {
         val radius = diameter / 2f
         if (radius <= 0f) return
-        val shadowCenter = Offset(centerX, centerY + diameter * colors.moreShadowOffsetFraction)
-        val shadowRadius = radius + diameter * colors.moreShadowSpreadFraction
-        drawCircle(
-            brush = Brush.radialGradient(
-                0f to colors.moreShadow,
-                radius / shadowRadius to colors.moreShadow,
-                1f to colors.moreShadow.copy(alpha = 0f),
-                center = shadowCenter,
+        if (colors.moreShadow.alpha > 0f && colors.moreShadowSpreadFraction > 0f) {
+            val shadowCenter = Offset(centerX, centerY + diameter * colors.moreShadowOffsetFraction)
+            val shadowRadius = radius + diameter * colors.moreShadowSpreadFraction
+            drawCircle(
+                brush = Brush.radialGradient(
+                    0f to colors.moreShadow,
+                    radius / shadowRadius to colors.moreShadow,
+                    1f to colors.moreShadow.copy(alpha = 0f),
+                    center = shadowCenter,
+                    radius = shadowRadius,
+                ),
                 radius = shadowRadius,
-            ),
-            radius = shadowRadius,
-            center = shadowCenter,
-            alpha = alpha,
-        )
+                center = shadowCenter,
+                alpha = alpha,
+            )
+        }
         drawCircle(
             brush = Brush.verticalGradient(
                 0f to colors.morePlateTop,

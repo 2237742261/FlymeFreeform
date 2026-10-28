@@ -17,6 +17,9 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 /** 设置页只能请求目录；启动能力不通过广播暴露。注册与 system_server 同生命周期。 */
+private const val REFRESH_RETRY_DELAY_MS = 4_000L
+private const val REFRESH_RETRIES = 5
+
 internal class ColorOsEntryCatalogBroker(
     private val context: Context,
     private val handler: Handler,
@@ -27,6 +30,7 @@ internal class ColorOsEntryCatalogBroker(
     private val worker = ThreadPoolExecutor(1, 1, 10, TimeUnit.SECONDS, ArrayBlockingQueue(4),
         { task -> Thread(task, "FlymeFreeform-CatalogRelay") }, ThreadPoolExecutor.AbortPolicy()).apply { allowCoreThreadTimeOut(true) }
     private val callbacks = mutableListOf<(List<SelectableEntry>?) -> Unit>()
+    private var retries = 0
     private var refreshing = false
     private var launching = false
     private var registered = false
@@ -116,7 +120,14 @@ internal class ColorOsEntryCatalogBroker(
 
     private fun publish(entries: List<SelectableEntry>?) {
         refreshing = false
-        if (entries != null) onCatalog(entries)
+        if (entries != null) {
+            retries = 0
+            onCatalog(entries)
+        } else if (retries < REFRESH_RETRIES) {
+            retries++
+            log(Log.DEBUG, "ENTRY_CATALOG_RETRY attempt=$retries", null)
+            handler.postDelayed({ refresh() }, REFRESH_RETRY_DELAY_MS)
+        }
         val pending = callbacks.toList()
         callbacks.clear()
         pending.forEach { it(entries) }

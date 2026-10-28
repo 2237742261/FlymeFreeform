@@ -62,7 +62,7 @@ internal class DoubleTapCaptionCloseHookInstaller(
             val controller = FlexibleTaskHandle.controller ?: return
             val task = getTopZoomTask.invoke(controller) ?: return
             exitFlexibleTask.invoke(controller, task, true, 0, 0)
-            module.log(Log.INFO, TAG, "CAPTION_DOUBLE_TAP_CLOSE")
+            module.log(Log.DEBUG, TAG, "CAPTION_DOUBLE_TAP_CLOSE")
         } catch (exception: ReflectiveOperationException) {
             logFailure("CAPTION_DOUBLE_TAP_CLOSE_REFLECTION_FAILED", exception)
         } catch (exception: RuntimeException) {

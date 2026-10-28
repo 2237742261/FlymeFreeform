@@ -38,7 +38,9 @@ internal data class AppCatalogSnapshot(
 ) {
     fun matches(settings: ModuleSettingsSnapshot): Boolean =
         this.settings.pinsSaved == settings.pinsSaved &&
-            this.settings.pinnedTargets == settings.pinnedTargets
+            this.settings.pinnedTargets == settings.pinnedTargets &&
+            this.settings.innerPinsSaved == settings.innerPinsSaved &&
+            this.settings.innerPinnedTargets == settings.innerPinnedTargets
 }
 
 /** 目录查询只在后台执行；发布后的 Bitmap 与列表供手势热路径只读。 */
@@ -68,7 +70,9 @@ internal class ColorOsAppCatalog(
             val content =
                 if (cached != null && cached.revision == revision &&
                     cached.settings.pinsSaved == settings.pinsSaved &&
-                    cached.settings.pinnedTargets == settings.pinnedTargets
+                    cached.settings.pinnedTargets == settings.pinnedTargets &&
+                    cached.settings.innerPinsSaved == settings.innerPinsSaved &&
+                    cached.settings.innerPinnedTargets == settings.innerPinnedTargets
                 ) {
                     cached
                 } else {

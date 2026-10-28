@@ -44,7 +44,7 @@ internal data class ColorOsSidebarVisualTarget(
             }
             if (cached != null) {
                 try {
-                    return bind(loader, cached).also { report("SIDEBAR_DEX_CACHE_HIT", null) }
+                    return bind(loader, cached)
                 } catch (e: ReflectiveOperationException) {
                     report("SIDEBAR_DEX_CACHE_REJECTED", e)
                 } catch (e: IllegalArgumentException) {

@@ -21,6 +21,11 @@ internal data class ModuleSettingsSnapshot(
     val pauseInLandscape: Boolean = ModulePreferences.DEFAULT_PAUSE_IN_LANDSCAPE,
     val pauseInGameMode: Boolean = ModulePreferences.DEFAULT_PAUSE_IN_GAME_MODE,
 ) {
+    /** 任一圈里含侧边栏目标（工具/快捷方式/应用/分身）时才需要向原厂拉条目目录。 */
+    val hasSidebarPins: Boolean
+        get() = pinnedTargets.any { it is PinnedTarget.Sidebar } ||
+            innerPinnedTargets.any { it is PinnedTarget.Sidebar }
+
     fun isPausedByEnvironment(landscape: Boolean, gameMode: Boolean): Boolean =
         (pauseInLandscape && landscape) || (pauseInGameMode && gameMode)
 

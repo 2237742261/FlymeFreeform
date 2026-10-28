@@ -271,7 +271,7 @@ internal class LauncherHookInstaller(
         val now = SystemClock.uptimeMillis()
         if (now - lastClaimLogAt < CLAIM_LOG_INTERVAL_MS) return
         lastClaimLogAt = now
-        module.log(Log.INFO, TAG, "LAUNCHER_CORNER_INPUT_CLAIMED")
+        module.log(Log.DEBUG, TAG, "LAUNCHER_CORNER_INPUT_CLAIMED")
     }
 
     private companion object {
