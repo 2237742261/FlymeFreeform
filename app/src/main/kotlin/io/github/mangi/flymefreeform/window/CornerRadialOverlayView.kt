@@ -137,7 +137,7 @@ internal class CornerRadialOverlayView(
     private var vibrateEnabled = false
     private var lastVibratedIndex: Int? = null
     private var lastVibrateUptime = 0L
-    private var vibrateAmplitude = 153
+    private var vibrateAmplitude = 185
     private val timeout = Runnable(::requestDismiss)
     private val dismissFallback = Runnable(::completeRadialExit)
 
@@ -169,8 +169,10 @@ internal class CornerRadialOverlayView(
     /** 由协调器在呼出前写入当前震动配置（关=不震）。 */
     fun applyVibration(enabled: Boolean, strength: Int) {
         vibrateEnabled = enabled
+        // 抬底 + 线性映射：60% ≈ 185 振幅（原来只有 153，配极短时长几乎感觉不到）
         vibrateAmplitude =
-            (1 + ModulePreferences.coerceRadialVibrateStrength(strength) * 254 / 100).coerceIn(1, 255)
+            (80 + ModulePreferences.coerceRadialVibrateStrength(strength) * 175 / 100)
+                .coerceIn(80, 255)
     }
 
     fun begin(
@@ -1173,7 +1175,7 @@ internal class CornerRadialOverlayView(
         const val PANEL_CONTENT_TRANSLATION_FRACTION = 0.12f
         const val TICK_INTERVAL_MS = 80L
         const val VIBRATE_MIN_INTERVAL_MS = 70L
-        const val TICK_VIBRATE_MS = 10L
+        const val TICK_VIBRATE_MS = 20L
         const val GESTURE_TIMEOUT_MS = 5_000L
         const val PANEL_TIMEOUT_MS = 15_000L
         const val DISMISS_FALLBACK_GRACE_MS = 260L

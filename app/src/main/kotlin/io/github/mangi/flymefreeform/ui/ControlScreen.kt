@@ -486,7 +486,8 @@ private fun vibratePreview(context: android.content.Context, strength: Int) {
                 context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
             } ?: return
         val amplitude =
-            (1 + ModulePreferences.coerceRadialVibrateStrength(strength) * 254 / 100).coerceIn(1, 255)
+            (80 + ModulePreferences.coerceRadialVibrateStrength(strength) * 175 / 100)
+                .coerceIn(80, 255)
         // 与轮盘同一套：默认 usage + 短时长，避免被系统触感开关吞掉。
         vibrator.vibrate(android.os.VibrationEffect.createOneShot(VIBRATE_PREVIEW_MS, amplitude))
     } catch (_: RuntimeException) {
