@@ -38,6 +38,13 @@ class MainActivity : ComponentActivity() {
                     onModuleEnabledChange = repository::setModuleEnabled,
                     onCornerSidesChange = repository::setCornerSides,
                     onCornerTriggerRangeChange = repository::setCornerTriggerRangeDp,
+                    onPanelScaleChange = { percent ->
+                        sendBroadcast(
+                            android.content.Intent("com.eta.flymefreeform.action.PANEL_SCALE")
+                                .setPackage("android")
+                                .putExtra("panel_scale", percent),
+                        )
+                    },
                     onOutsideTapCloseModeChange = repository::setOutsideTapCloseMode,
                     onHandleSwipeUpToMiniEnabledChange =
                         repository::setHandleSwipeUpToMiniEnabled,
