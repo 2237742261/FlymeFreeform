@@ -38,6 +38,7 @@ import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.SportsEsports
 import androidx.compose.material.icons.rounded.Straighten
 import androidx.compose.material.icons.rounded.SwipeRight
+import androidx.compose.material.icons.rounded.ZoomOutMap
 import androidx.compose.material.icons.rounded.SwipeUp
 import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.runtime.Composable
@@ -94,6 +95,7 @@ internal fun ControlScreen(
     onModuleEnabledChange: (Boolean) -> Unit,
     onCornerSidesChange: (Boolean, Boolean) -> Unit,
     onCornerTriggerRangeChange: (Int) -> Unit,
+    onPanelScaleChange: (Int) -> Unit,
     onOutsideTapCloseModeChange: (OutsideTapCloseMode) -> Unit,
     onHandleSwipeUpToMiniEnabledChange: (Boolean) -> Unit,
     onKeepAwakeEnabledChange: (Boolean) -> Unit,
@@ -175,6 +177,7 @@ internal fun ControlScreen(
                             featuresEnabled = featuresEnabled,
                             onCornerSidesChange = onCornerSidesChange,
                             onCornerTriggerRangeChange = onCornerTriggerRangeChange,
+                            onPanelScaleChange = onPanelScaleChange,
                             onCornerRangePreviewChange = { cornerRangePreviewDp = it },
                             onNavigateToPinnedApps = onNavigateToPinnedApps,
                         )
@@ -372,6 +375,7 @@ private fun SettingsCard(
     featuresEnabled: Boolean,
     onCornerSidesChange: (Boolean, Boolean) -> Unit,
     onCornerTriggerRangeChange: (Int) -> Unit,
+    onPanelScaleChange: (Int) -> Unit,
     onCornerRangePreviewChange: (Int?) -> Unit,
     onNavigateToPinnedApps: () -> Unit,
 ) {
@@ -419,6 +423,10 @@ private fun SettingsCard(
             onPreviewChange = onCornerRangePreviewChange,
             onCommit = onCornerTriggerRangeChange,
         )
+        PanelScaleSlider(
+            enabled = featuresEnabled,
+            onCommit = onPanelScaleChange,
+        )
         ArrowPreference(
             title = stringResource(R.string.radial_apps_title),
             summary = appsSummary,
@@ -427,6 +435,45 @@ private fun SettingsCard(
             startAction = { PreferenceIcon(Icons.Rounded.Apps, featuresEnabled) },
         )
     }
+}
+
+/** 面板缩放缓条：写 Settings.Global，由 sidebar 进程读取。 */
+@Composable
+private fun PanelScaleSlider(
+    enabled: Boolean,
+    onCommit: (Int) -> Unit,
+) {
+    val context = LocalContext.current
+    val confirmed =
+        remember {
+            android.provider.Settings.Global.getInt(
+                context.contentResolver,
+                "flyme_ff_panel_scale",
+                90,
+            ).coerceIn(50, 100)
+        }
+    var draftValue by rememberSaveable { mutableFloatStateOf(confirmed.toFloat()) }
+    var isDragging by remember { mutableStateOf(false) }
+    SliderPreference(
+        value = draftValue,
+        onValueChange = { value ->
+            isDragging = true
+            draftValue = value.roundToInt().coerceIn(50, 100).toFloat()
+        },
+        title = "面板缩放",
+        summary = "更多面板缩放调节",
+        valueText = "${draftValue.roundToInt()}%",
+        enabled = enabled,
+        startAction = { PreferenceIcon(Icons.Rounded.ZoomOutMap, enabled) },
+        valueRange = 50f..100f,
+        steps = 49,
+        onValueChangeFinished = {
+            isDragging = false
+            val committed = draftValue.roundToInt().coerceIn(50, 100)
+            draftValue = committed.toFloat()
+            onCommit(committed)
+        },
+    )
 }
 
 /** 震动强度滑条：拖动过程中按当前强度实时给一次短震动，方便直接感受。 */
