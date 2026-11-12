@@ -71,8 +71,35 @@ internal class SystemUiHookInstaller(
             context.registerReceiver(
                 object : BroadcastReceiver() {
                     override fun onReceive(receiverContext: Context?, intent: Intent?) {
-                        // 所有设置项统一由 ProcessConfiguration 解包，避免各进程只抄一部分字段
-                        configuration.applySettingsBroadcast(intent ?: return)
+                        if (intent?.action != ModulePreferences.ACTION_PINNED_TARGETS_CHANGED) return
+                        if (!intent.hasExtra(ModulePreferences.EXTRA_RADIAL_VIBRATE_STRENGTH)) return
+                        val snapshot = configuration.snapshot
+                        configuration.override(
+                            snapshot.copy(
+                                enabled =
+                                    intent.getBooleanExtra(
+                                        ModulePreferences.EXTRA_MODULE_ENABLED,
+                                        snapshot.enabled,
+                                    ),
+                                keepAwakeEnabled =
+                                    intent.getBooleanExtra(
+                                        ModulePreferences.EXTRA_KEEP_AWAKE_ENABLED,
+                                        snapshot.keepAwakeEnabled,
+                                    ),
+                                radialVibrateEnabled =
+                                    intent.getBooleanExtra(
+                                        ModulePreferences.EXTRA_RADIAL_VIBRATE_ENABLED,
+                                        snapshot.radialVibrateEnabled,
+                                    ),
+                                radialVibrateStrength =
+                                    ModulePreferences.coerceRadialVibrateStrength(
+                                        intent.getIntExtra(
+                                            ModulePreferences.EXTRA_RADIAL_VIBRATE_STRENGTH,
+                                            snapshot.radialVibrateStrength,
+                                        ),
+                                    ),
+                            ),
+                        )
                     }
                 },
                 IntentFilter(ModulePreferences.ACTION_PINNED_TARGETS_CHANGED),

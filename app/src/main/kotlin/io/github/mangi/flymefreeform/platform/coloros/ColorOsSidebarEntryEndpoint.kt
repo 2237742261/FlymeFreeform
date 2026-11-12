@@ -48,7 +48,32 @@ internal class ColorOsSidebarEntryEndpoint(
             if (intent?.action != ModulePreferences.ACTION_PINNED_TARGETS_CHANGED ||
                 sentFromUid != moduleUid()
             ) return
-            configuration.applySettingsBroadcast(intent)
+            val encoded = intent.getStringExtra(ModulePreferences.EXTRA_PINNED_TARGETS) ?: return
+            val innerTargets =
+                PinnedTargetCodec.decodeList(
+                    intent.getStringExtra(ModulePreferences.EXTRA_INNER_PINNED_TARGETS).orEmpty(),
+                    ModulePreferences.MAX_INNER_PINNED_APPS,
+                )
+            configuration.override(
+                configuration.snapshot.copy(
+                    enabled = intent.getBooleanExtra(
+                        ModulePreferences.EXTRA_MODULE_ENABLED,
+                        configuration.snapshot.enabled,
+                    ),
+                    pinsSaved = intent.getBooleanExtra(
+                        ModulePreferences.EXTRA_PINS_SAVED,
+                        configuration.snapshot.pinsSaved,
+                    ),
+                    pinnedTargets =
+                        PinnedTargetCodec.decodeList(encoded, ModulePreferences.MAX_OUTER_PINNED_APPS),
+                    innerPinnedTargets = innerTargets,
+                    innerPinsSaved =
+                        intent.getBooleanExtra(
+                            ModulePreferences.EXTRA_INNER_PINS_SAVED,
+                            configuration.snapshot.innerPinsSaved,
+                        ),
+                ),
+            )
         }
     }
 
@@ -200,13 +225,14 @@ internal class ColorOsSidebarEntryEndpoint(
 
     private fun launchAllowed(target: PinnedTarget.Sidebar): Boolean {
         val snapshot = configuration.snapshot
-        // 面板里的工具未必固定在轮盘上，这里不再要求它在固定项里。
-        val ok = allowed() && target.userId == (Process.myUid() / 100_000) && snapshot.enabled
+        val pinned =
+            target in snapshot.pinnedTargets || target in snapshot.innerPinnedTargets
+        val ok = allowed() && target.userId == (Process.myUid() / 100_000) && snapshot.enabled && pinned
         if (!ok) {
             log(
                 Log.WARN,
                 "SIDEBAR_LAUNCH_BLOCKED allowed=${allowed()} user=${target.userId}" +
-                    " enabled=${snapshot.enabled}",
+                    " enabled=${snapshot.enabled} pinned=$pinned",
                 null,
             )
         }

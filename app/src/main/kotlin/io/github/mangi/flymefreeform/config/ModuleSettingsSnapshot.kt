@@ -18,8 +18,6 @@ internal data class ModuleSettingsSnapshot(
     val keepAwakeEnabled: Boolean = ModulePreferences.DEFAULT_KEEP_AWAKE_ENABLED,
     val radialVibrateEnabled: Boolean = ModulePreferences.DEFAULT_RADIAL_VIBRATE_ENABLED,
     val radialVibrateStrength: Int = ModulePreferences.DEFAULT_RADIAL_VIBRATE_STRENGTH,
-    /** 工具栏顺序（alias 列表）；为空表示按名称排序。 */
-    val toolOrder: List<String> = emptyList(),
     val pauseInLandscape: Boolean = ModulePreferences.DEFAULT_PAUSE_IN_LANDSCAPE,
     val pauseInGameMode: Boolean = ModulePreferences.DEFAULT_PAUSE_IN_GAME_MODE,
 ) {
@@ -62,7 +60,6 @@ internal data class ModuleSettingsSnapshot(
                 ModulePreferences.KEY_RADIAL_VIBRATE_STRENGTH,
                 ModulePreferences.coerceRadialVibrateStrength(radialVibrateStrength),
             )
-            .putString(ModulePreferences.KEY_TOOL_ORDER, toolOrder.joinToString(","))
         if (pinsSaved) {
             editor.putString(
                 ModulePreferences.KEY_PINNED_TARGETS,
@@ -129,14 +126,6 @@ internal data class ModuleSettingsSnapshot(
                     ModulePreferences.KEY_RADIAL_VIBRATE_ENABLED,
                     ModulePreferences.DEFAULT_RADIAL_VIBRATE_ENABLED,
                 )
-            val toolOrder =
-                preferences
-                    .getString(ModulePreferences.KEY_TOOL_ORDER, "")
-                    .orEmpty()
-                    .split(',')
-                    .map { it.trim() }
-                    .filter { it.isNotEmpty() }
-                    .distinct()
             val radialVibrateStrength =
                 ModulePreferences.coerceRadialVibrateStrength(
                     preferences.getInt(
@@ -178,7 +167,6 @@ internal data class ModuleSettingsSnapshot(
                 keepAwakeEnabled = keepAwakeEnabled,
                 radialVibrateEnabled = radialVibrateEnabled,
                 radialVibrateStrength = radialVibrateStrength,
-                toolOrder = toolOrder,
                 pauseInLandscape = preferences.getBoolean(
                     ModulePreferences.KEY_PAUSE_IN_LANDSCAPE,
                     ModulePreferences.DEFAULT_PAUSE_IN_LANDSCAPE,
