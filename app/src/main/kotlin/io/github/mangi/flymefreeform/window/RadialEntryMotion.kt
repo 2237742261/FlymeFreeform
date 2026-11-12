@@ -29,25 +29,16 @@ internal object RadialEntryMotion {
     private val selection = CubicMotionCurve(0.33f, 0f, 0.66f, 1f)
 
     fun sample(linearProgress: Float): RadialEntryVisuals {
-        val elapsed = linearProgress.coerceIn(0f, 1f) * DURATION_MILLIS
-        if (elapsed <= EXPANSION_MILLIS) {
-            val progress = elapsed / EXPANSION_MILLIS
-            val travel = expandPosition.sample(progress)
-            return RadialEntryVisuals(
-                contentAlpha = fade.sample(progress),
-                radialProgress = travel,
-                horizontalOvershoot = travel,
-                rotationDegrees = -270f + 275f * expandRotation.sample(progress),
-                iconScale = 0.8f + 0.25f * expandScale.sample(progress),
-            )
-        }
-        val progress = (elapsed - EXPANSION_MILLIS) / REBOUND_MILLIS
+        // 展开仍在 130ms 内完成，只是不再旋转 / 过冲 / 回弹
+        val expand =
+            ((linearProgress.coerceIn(0f, 1f) * DURATION_MILLIS) / EXPANSION_MILLIS)
+                .coerceIn(0f, 1f)
         return RadialEntryVisuals(
-            contentAlpha = 1f,
-            radialProgress = 1f,
-            horizontalOvershoot = 1f - reboundPosition.sample(progress),
-            rotationDegrees = 5f * (1f - reboundRotation.sample(progress)),
-            iconScale = 1f + 0.05f * (1f - reboundScale.sample(progress)),
+            contentAlpha = expand,
+            radialProgress = expandPosition.sample(expand),
+            horizontalOvershoot = 0f,
+            rotationDegrees = 0f,
+            iconScale = 1f,
         )
     }
 
