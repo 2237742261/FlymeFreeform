@@ -2,6 +2,7 @@ package io.github.mangi.flymefreeform.platform.coloros
 
 import android.animation.Animator
 import android.content.Context
+import android.util.Log
 import android.os.IInterface
 import android.util.TypedValue
 import android.view.Menu
@@ -15,7 +16,11 @@ import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 
 /** 仅适配已核对的侧栏版本：独立创建内容视图，不修改原生面板状态。 */
-internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebarVisualTarget) {
+internal class ColorOsAllAppsContent(
+    loader: ClassLoader,
+    target: ColorOsSidebarVisualTarget,
+    private val module: io.github.libxposed.api.XposedModule,
+) {
     private val allClass = loader.loadClass(ALL_CLASS)
     private val searchClass = loader.loadClass(SEARCH_CLASS)
     private val mainClass = loader.loadClass(MAIN_CLASS)
@@ -41,7 +46,12 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
     private val getKey = dataClass.getMethod("getKey")
     private val getEntry = dataClass.getMethod("getEntryBean")
     private val getType = getEntry.returnType.getMethod("getType")
+    private val getLabel = getEntry.returnType.getMethod("getLabel")
     private val adapterClass = loader.loadClass(ADAPTER_CLASS)
+    private val getMData = adapterClass.getMethod("getMData")
+    private val helperClass = loader.loadClass("com.oplus.smartsidebar.panelview.edgepanel.data.entrybeans.EntryBeanHelper")
+    private val getAllTools = helperClass.getMethod("getAllAppListForTool")
+    private val toolBeanLabel = loader.loadClass("com.oplus.smartsidebar.panelview.edgepanel.data.entrybeans.models.beans.EntryBean").getMethod("getLabel")
     private val getClick = adapterClass.getMethod("getOnItemClick")
     private val setClick = adapterClass.getMethod("setOnItemClick", getClick.returnType)
     private val invokeClick = getClick.returnType.getMethod("invoke", Any::class.java, Any::class.java)
@@ -82,7 +92,17 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
 
     fun sidebarHidden(): Boolean = (getMain.call(handler)?.let { getState.call(it) } as? Enum<*>)?.name == "FLOAT_BAR_SHOWING"
 
-    fun leftSide(): Boolean = getMain.call(handler)?.let { getLeft.call(it) as Boolean } ?: false
+    fun leftSide(): Boolean =
+        try {
+            // 按呼出角落决定面板靠哪边：左下角呼出靠左，右下角呼出靠右。
+            android.provider.Settings.Global.getInt(
+                context.contentResolver,
+                "flyme_ff_more_panel_left",
+                0,
+            ) == 1
+        } catch (_: RuntimeException) {
+            false
+        }
 
     fun startLoading() {
         if (closed || loading) return
@@ -121,6 +141,10 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
     }
 
     fun bindAdapter(adapter: Any, onClick: (Boolean, () -> Unit) -> Unit) {
+        hookTools()
+        hookMData()
+        reorderTools(adapter)
+        observeAdapter(adapter)
         val original = getClick.call(adapter) ?: return
         val callback = Proxy.newProxyInstance(getClick.returnType.classLoader, arrayOf(getClick.returnType)) { proxy, method, args ->
             when (method.name) {
@@ -151,6 +175,129 @@ internal class ColorOsAllAppsContent(loader: ClassLoader, target: ColorOsSidebar
             }
         }
         setClick.call(adapter, callback)
+    }
+
+    private val toolHeadOrder =
+        listOf("微信扫一扫", "支付宝扫一扫", "微信支付", "支付宝付款")
+    private var reorderRunning = false
+
+    private fun matches(name: String, label: String?): Boolean {
+        if (label == null) return false
+        val a = name.replace(" ", "")
+        val b = label.replace(" ", "")
+        return b == a || b.contains(a)
+    }
+
+    private fun labelOf(data: Any?): String? {
+        if (data == null || !dataClass.isInstance(data)) return null
+        return runCatching {
+            val entry = getEntry.call(data) ?: return@runCatching null
+            getLabel.invoke(entry)?.toString()
+        }.getOrNull()
+    }
+
+    private var toolsHooked = false
+
+    private fun hookTools() {
+        if (toolsHooked) return
+        toolsHooked = true
+        try {
+            module.hook(getAllTools).intercept { chain ->
+                val original = chain.proceed()
+                @Suppress("UNCHECKED_CAST")
+                val list = original as? List<Any?> ?: return@intercept original
+                reorderList(list)
+            }
+            Log.i("FlymeFreeform", "TOOLS hook_ok")
+        } catch (throwable: Throwable) {
+            Log.i("FlymeFreeform", "TOOLS hook_fail " + throwable)
+        }
+    }
+
+    private fun reorderList(list: List<Any?>): List<Any?> {
+        if (list.size < toolHeadOrder.size) return list
+        val labelOfBean: (Any?) -> String? = { bean ->
+            if (bean == null) null else runCatching { toolBeanLabel.invoke(bean)?.toString() }.getOrNull()
+        }
+        val current = list.take(toolHeadOrder.size).map(labelOfBean)
+        if (toolHeadOrder.indices.all { i -> matches(toolHeadOrder[i], current.getOrNull(i)) }) return list
+        val used = HashSet<Any>()
+        val head =
+            toolHeadOrder.mapNotNull { name ->
+                list.firstOrNull { bean -> bean != null && !used.contains(bean) && matches(name, labelOfBean(bean)) }
+                    ?.also { used.add(it) }
+            }
+        if (head.size != toolHeadOrder.size) {
+            Log.i("FlymeFreeform", "TOOLS miss head=" + head.map(labelOfBean) + " all=" + list.take(12).map(labelOfBean))
+            return list
+        }
+        Log.i("FlymeFreeform", "TOOLS done head=" + head.map(labelOfBean))
+        return head + list.filterNot { bean -> head.any { it === bean } }
+    }
+
+    private fun hookMData() {
+        if (mDataHooked) return
+        mDataHooked = true
+        try {
+            module.hook(getMData).intercept { chain ->
+                val ordered = orderedItems
+                if (ordered != null && ordered.isNotEmpty()) ordered else chain.proceed()
+            }
+            Log.i("FlymeFreeform", "REORDER hook_mdata_ok")
+        } catch (throwable: Throwable) {
+            Log.i("FlymeFreeform", "REORDER hook_mdata_fail " + throwable)
+        }
+    }
+
+    private fun reorderTools(adapter: Any) {
+        if (reorderRunning) return
+        try {
+            val raw = runCatching { getMData.call(adapter) }.getOrNull()
+            @Suppress("UNCHECKED_CAST")
+            val list = raw as? List<Any?> ?: return
+            if (list.size < toolHeadOrder.size) return
+            val currentLabels = list.take(toolHeadOrder.size).map { labelOf(it) }
+            if (toolHeadOrder.indices.all { i -> matches(toolHeadOrder[i], currentLabels.getOrNull(i)) }) {
+                orderedItems = list
+                return
+            }
+            Log.i("FlymeFreeform", "REORDER all=" + list.mapNotNull { labelOf(it) }.joinToString("|"))
+            val used = HashSet<Any>()
+            val head =
+                toolHeadOrder.mapNotNull { name ->
+                    list.firstOrNull { item -> item != null && !used.contains(item) && matches(name, labelOf(item)) }
+                        ?.also { used.add(it) }
+                }
+            if (head.size != toolHeadOrder.size) {
+                Log.i("FlymeFreeform", "REORDER miss head=" + head.map { labelOf(it) })
+                return
+            }
+            reorderRunning = true
+            try {
+                orderedItems = head + list.filterNot { item -> head.any { it === item } }
+                Log.i("FlymeFreeform", "REORDER done head=" + head.map { labelOf(it) })
+            } finally {
+                reorderRunning = false
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+
+    private var orderedItems: List<Any?>? = null
+    private var mDataHooked = false
+
+    private fun observeAdapter(adapter: Any) {
+        try {
+            val register = adapterClass.methods.firstOrNull { it.name == "registerAdapterDataObserver" } ?: return
+            val observerClass = register.parameterTypes.firstOrNull() ?: return
+            val observer = Proxy.newProxyInstance(observerClass.classLoader, arrayOf(observerClass)) { _, method, _ ->
+                if (method.name == "onChanged") reorderTools(adapter)
+                null
+            }
+            register.invoke(adapter, observer)
+        } catch (_: Exception) {
+        }
     }
 
     fun leaveSearch(): Boolean {
