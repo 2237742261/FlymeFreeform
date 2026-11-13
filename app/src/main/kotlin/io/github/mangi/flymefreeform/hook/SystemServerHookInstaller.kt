@@ -20,6 +20,10 @@ internal class SystemServerHookInstaller(
         OutsideTapCloseHookInstaller(module, configuration, environment).install(classLoader)
         HandleSwipeUpHookInstaller(module, configuration, environment).install(classLoader)
         DoubleTapCaptionCloseHookInstaller(module, configuration, environment).install(classLoader)
+        // 让路：先把「系统手势会抢走角落按下」这个问题在 system_server 里解掉，
+        // 桌面那套 hook 先留着兜底，确认没冲突再拆。
+        SystemGestureSuppressor(module, configuration).install(classLoader)
+        UahInputSuppressor(module, configuration, environment).install(classLoader)
         try {
             // 厂商初始化入口只能反射定位；缺失时保留系统启动流程。
             @SuppressLint("PrivateApi")
