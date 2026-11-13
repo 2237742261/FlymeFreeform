@@ -687,7 +687,7 @@ private fun frameworkPresentation(state: FrameworkConnectionState): FrameworkPre
                     state.frameworkName ?: unknown,
                     state.frameworkVersion ?: unknown,
                     state.apiVersion?.toString() ?: unknown,
-                ),
+                ) + "\n", // 补一个空行：两态副标题都占两行，状态切换时不会抖。
             )
         }
         FrameworkConnectionStatus.Incompatible -> FrameworkPresentation(stringResource(R.string.framework_status_incompatible), stringResource(state.issue.incompatibleSummary()))

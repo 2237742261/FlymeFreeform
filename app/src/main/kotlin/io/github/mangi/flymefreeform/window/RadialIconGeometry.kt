@@ -3,8 +3,8 @@ package io.github.mangi.flymefreeform.window
 /** 扇形与图标共享屏幕比例；条目数量只改变角度，不改变半径。 */
 internal object RadialIconGeometry {
     private const val BASE_SHORT_EDGE_DP = 400f
-    private const val BASE_RADIUS_DP = 256f
-    private const val BASE_ICON_DIAMETER_DP = 48f
+    private const val BASE_RADIUS_DP = 262f
+    private const val BASE_ICON_DIAMETER_DP = 50f
     private const val BASE_ITEM_PADDING_DP = 3.25f
     private const val RING_GAP_DP = 9.5f
 

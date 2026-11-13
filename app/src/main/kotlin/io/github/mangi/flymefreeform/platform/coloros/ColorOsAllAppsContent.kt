@@ -84,6 +84,11 @@ internal class ColorOsAllAppsContent(
         require(ViewGroup::class.java.isAssignableFrom(allClass))
         require(FrameLayout::class.java.isAssignableFrom(cardClass))
         require(getRouter.returnType.name == ROUTER_CLASS)
+        // 在数据加载前就把工具列表 hook 上，否则第一次打开时列表已经渲染完了。
+        hookTools()
+        ownSearches.add(search)
+        hookCommonGroup()
+        scheduleHeaderRename()
         allClass.getMethod("showAllPanel", Boolean::class.javaPrimitiveType).call(view, leftSide())
     }
 
@@ -134,6 +139,143 @@ internal class ColorOsAllAppsContent(
         }
     }
 
+    /** 临时探针：dump 面板数据形态、分组标题来源、UserPanelView 的最近应用接口。定位完即删。 */
+    private fun probeDump(stage: String) {
+        runCatching {
+            val sb = StringBuilder()
+            sb.append("adapter=").append(findRecyclerAdapter(view)?.javaClass?.name).append("; ")
+            val adapter = findRecyclerAdapter(view)
+            val data = adapter?.let { runCatching { getMData.call(it) }.getOrNull() }
+            if (data is List<*>) {
+                sb.append("size=").append(data.size).append("; ")
+                val kinds = LinkedHashMap<String, Int>()
+                data.filterNotNull().forEach { kinds[it.javaClass.simpleName] = (kinds[it.javaClass.simpleName] ?: 0) + 1 }
+                sb.append("kinds=").append(kinds).append("; ")
+                data.filterNotNull()
+                    .filter { it.javaClass.simpleName.contains("Title") }
+                    .forEach { item ->
+                        val text = runCatching { item.javaClass.getMethod("getText").invoke(item) }.getOrNull()
+                        sb.append("TITLE[").append(item.javaClass.simpleName).append("=").append(text).append("]; ")
+                    }
+            } else {
+                sb.append("mData=null; ")
+            }
+            val texts = ArrayList<String>()
+            collectTexts(view, texts)
+            sb.append("texts=").append(texts.take(20)).append("; ")
+            val userPanel = runCatching { getMain.call(handler)?.let { getUser.call(it) } }.getOrNull()
+            sb.append("userPanel=").append(userPanel?.javaClass?.name).append("; ")
+            userPanel?.javaClass?.methods
+                ?.filter { it.name.contains("ecent") && it.parameterCount <= 1 }
+                ?.forEach { method ->
+                    sb.append("m.").append(method.name).append("/").append(method.parameterCount)
+                    if (method.parameterCount == 0) {
+                        val result = runCatching { method.invoke(userPanel) }.getOrNull()
+                        sb.append("->").append(result?.javaClass?.simpleName)
+                        if (result is List<*>) {
+                            sb.append("(").append(result.size).append(")")
+                            result.take(3).forEach { entry ->
+                                val label = entry?.let { e ->
+                                    runCatching { e.javaClass.getMethod("getLabel").invoke(e) }.getOrNull()
+                                }
+                                sb.append(" ").append(entry?.javaClass?.simpleName).append("/").append(label)
+                            }
+                        }
+                    }
+                    sb.append("; ")
+                }
+            module.log(Log.INFO, TAG, "FF_PROBE_$stage $sb")
+            val items = (data as? List<*>)?.filterNotNull().orEmpty()
+            val titleLike = items.firstOrNull { it.javaClass.simpleName.contains("Title") }
+            if (titleLike != null) {
+                val dump = StringBuilder("ctors=")
+                titleLike.javaClass.declaredConstructors.forEach { ctor ->
+                    dump.append(ctor.parameterTypes.map { it.simpleName }).append("|")
+                }
+                dump.append(" fields=")
+                titleLike.javaClass.declaredFields.take(10).forEach { field ->
+                    dump.append(field.name).append(":").append(field.type.simpleName).append(",")
+                }
+                dump.append(" getters=")
+                titleLike.javaClass.declaredMethods.filter { it.parameterCount == 0 }.take(14).forEach { method ->
+                    val value = runCatching { method.invoke(titleLike) }.getOrNull()
+                    dump.append(method.name).append("=")
+                        .append(if (value is String) value else value?.javaClass?.simpleName).append(",")
+                }
+                module.log(Log.INFO, TAG, "FF_PROBE2_$stage $dump")
+            }
+            val appLike = items.firstOrNull { it.javaClass.name == DATA_CLASS }
+            if (appLike != null) {
+                val dump = StringBuilder("getters=")
+                appLike.javaClass.declaredMethods.filter { it.parameterCount == 0 }.take(18).forEach { method ->
+                    val value = runCatching { method.invoke(appLike) }.getOrNull()
+                    dump.append(method.name).append("=")
+                        .append(if (value is String) value else value?.javaClass?.simpleName).append(",")
+                }
+                module.log(Log.INFO, TAG, "FF_PROBE3_$stage $dump")
+            }
+            val layoutManager = findRecyclerLayoutManager(view)
+            val span = runCatching {
+                layoutManager?.javaClass?.getMethod("getSpanCount")?.invoke(layoutManager)
+            }.getOrNull()
+            module.log(Log.INFO, TAG, "FF_PROBE4_$stage span=$span lm=${layoutManager?.javaClass?.name}")
+            val recent = runCatching {
+                val panel = getMain.call(handler)?.let { getUser.call(it) }
+                panel?.javaClass?.getMethod("getRecentData")?.invoke(panel)
+            }.getOrNull()
+            if (recent is List<*>) {
+                val dump = StringBuilder("size=${recent.size} ")
+                recent.filterNotNull().take(6).forEach { entry ->
+                    dump.append("[").append(entry.javaClass.simpleName)
+                    entry.javaClass.declaredMethods.filter { it.parameterCount == 0 }.take(8).forEach { method ->
+                        val value = runCatching { method.invoke(entry) }.getOrNull()
+                        dump.append(" ").append(method.name).append("=")
+                            .append(if (value is String) value else value?.javaClass?.simpleName)
+                    }
+                    dump.append("] ")
+                }
+                module.log(Log.INFO, TAG, "FF_PROBE5_$stage $dump")
+            }
+            runCatching { java.io.File(context.cacheDir, "ff_probe.txt").appendText("[$stage] $sb\n") }
+        }.onFailure { module.log(Log.WARN, TAG, "FF_PROBE_${stage}_FAILED", it) }
+    }
+
+    private fun findRecyclerAdapter(root: View): Any? {
+        if (root.javaClass.name.contains("RecyclerView")) {
+            return runCatching { root.javaClass.getMethod("getAdapter").invoke(root) }.getOrNull()
+        }
+        if (root is ViewGroup) {
+            for (index in 0 until root.childCount) {
+                val found = findRecyclerAdapter(root.getChildAt(index))
+                if (found != null) return found
+            }
+        }
+        return null
+    }
+
+    private fun findRecyclerLayoutManager(root: View): Any? {
+        if (root.javaClass.name.contains("RecyclerView")) {
+            return runCatching { root.javaClass.getMethod("getLayoutManager").invoke(root) }.getOrNull()
+        }
+        if (root is ViewGroup) {
+            for (index in 0 until root.childCount) {
+                val found = findRecyclerLayoutManager(root.getChildAt(index))
+                if (found != null) return found
+            }
+        }
+        return null
+    }
+
+    private fun collectTexts(root: View, out: MutableList<String>) {
+        if (root is android.widget.TextView) {
+            root.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { out.add(it) }
+            return
+        }
+        if (root is ViewGroup) {
+            for (index in 0 until root.childCount) collectTexts(root.getChildAt(index), out)
+        }
+    }
+
     private fun optionalAnimator(name: String): Method? = try {
         searchClass.getMethod(name).also { require(Animator::class.java.isAssignableFrom(it.returnType)) }
     } catch (_: NoSuchMethodException) {
@@ -141,7 +283,6 @@ internal class ColorOsAllAppsContent(
     }
 
     fun bindAdapter(adapter: Any, onClick: (Boolean, () -> Unit) -> Unit) {
-        hookTools()
         hookMData()
         reorderTools(adapter)
         observeAdapter(adapter)
@@ -196,7 +337,6 @@ internal class ColorOsAllAppsContent(
         }.getOrNull()
     }
 
-    private var toolsHooked = false
 
     private fun hookTools() {
         if (toolsHooked) return
@@ -212,6 +352,336 @@ internal class ColorOsAllAppsContent(
         } catch (throwable: Throwable) {
             Log.i("FlymeFreeform", "TOOLS hook_fail " + throwable)
         }
+    }
+
+    /** 在「工具」和「应用」之间插入「常用」分组（12 个最近使用过的应用）。 */
+    private fun hookCommonGroup() {
+        if (commonHooked) return
+        commonHooked = true
+        try {
+            module.hook(getData).intercept { chain ->
+                val original = chain.proceed()
+                // SearchHelper 是进程级共享的：官方侧边栏的「全部」页也会走这个 hook。
+                // 只认我们自己窗口那个实例，否则官方面板里会多出一组没人改名的「工具」栏。
+                val owner = chain.thisObject
+                @Suppress("UNCHECKED_CAST")
+                val list = original as? List<Any?>
+                if (list == null) {
+                    original
+                } else if (owner != null && ownSearches.contains(owner)) {
+                    injectCommonGroup(list)
+                    original
+                } else {
+                    original
+                }
+            }
+            Log.i(TAG, "COMMON hook_ok")
+        } catch (throwable: Throwable) {
+            Log.i(TAG, "COMMON hook_fail " + throwable)
+        }
+    }
+
+    private fun injectCommonGroup(list: List<Any?>) {
+        try {
+            @Suppress("UNCHECKED_CAST")
+            val data = list as? MutableList<Any?> ?: return
+            val titles = data.indices.filter { isTitle(data[it]) }
+            if (titles.size < 2) {
+                return
+            }
+            if (data.any { isTitle(it) && titleText(it) == COMMON_TITLE }) return
+            val apps = data.filterNotNull()
+                .filter { it.javaClass.name == DATA_CLASS }
+                .filter { (getKey.call(it) as? String)?.contains('.') == true }
+            if (apps.size < COMMON_MIN_APPS) {
+                return
+            }
+            val byPackage = LinkedHashMap<String, Any>()
+            apps.forEach { entry ->
+                entryIds(entry).forEach { id -> byPackage.putIfAbsent(id, entry) }
+            }
+            val recent = recentPackages()
+            Log.i(
+                TAG,
+                "COMMON apps=" + apps.size + " ids=" + byPackage.size +
+                    " keys=" + apps.take(3).map { getKey.call(it) } +
+                    " recent=" + recent.take(3),
+            )
+            val picked = ArrayList<Any>()
+            for (name in recent) {
+                if (picked.size >= COMMON_LIMIT) break
+                byPackage[name]?.let { picked.add(it) }
+            }
+            if (picked.isEmpty()) {
+                Log.i(TAG, "COMMON empty ids=" + byPackage.size)
+                return
+            }
+            val title = makeTitle(data[titles[0]])
+            if (title == null) {
+                Log.i(TAG, "COMMON title_null")
+                return
+            }
+            val at = titles.last()
+            val block = ArrayList<Any?>(picked.size + 1)
+            block.add(title)
+            block.addAll(picked)
+            data.addAll(at, block)
+            ourTitlePosition = at
+            Log.i(
+                TAG,
+                "COMMON injected=" + picked.size + " at=" + at + " titles=" + titles +
+                    " first=" + getKey.call(picked[0]),
+            )
+            scheduleHeaderRename()
+        } catch (throwable: Throwable) {
+            Log.i(TAG, "COMMON inject_fail " + throwable)
+        }
+    }
+
+    /** 标题项的实际文案由布局决定，数据里改不动，只能在渲染出来后按位置改 TextView。 */
+    private fun scheduleHeaderRename() {
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        listOf(200L, 500L, 900L, 1400L, 2000L, 2800L, 3800L, 5000L).forEach { delay ->
+            handler.postDelayed({ renameCommonHeader() }, delay)
+        }
+    }
+
+    /**
+     * 按适配器位置改「常用」标题文案。
+     *
+     * 不能用「取最靠下的工具标题」这种启发式：面板滚动后我们那一格可能没绑定，
+     * 屏上只剩原来那个工具标题，就会被误改成「常用」（用户报过「工具标题偶尔变常用」）。
+     */
+    private fun renameCommonHeader() {
+        try {
+            if (closed) return
+            val position = ourTitlePosition
+            if (position < 0) return
+            val recyclers = ArrayList<ViewGroup>()
+            collectRecyclers(view, recyclers)
+            if (recyclers.isEmpty()) return
+            for (recycler in recyclers) {
+                // getAdapter / getChildAdapterPosition 声明在 RecyclerView 上，必须按实例类取，
+                // 用 ViewGroup::class.java 取不到（上一版就栽在这，异常被 catch 吞掉，改名一次没跑）。
+                val type = recycler.javaClass
+                val adapter = try {
+                    type.getMethod("getAdapter").invoke(recycler)
+                } catch (_: Throwable) {
+                    null
+                }
+                if (adapter == null || adapter.javaClass.name != ADAPTER_CLASS) continue
+                val adapterPosition = type.getMethod("getChildAdapterPosition", View::class.java)
+                var target: View? = null
+                for (index in 0 until recycler.childCount) {
+                    val child = recycler.getChildAt(index)
+                    if ((adapterPosition.invoke(recycler, child) as? Int) == position) {
+                        target = child
+                        break
+                    }
+                }
+                if (target == null) continue
+                val textView = firstText(target) ?: continue
+                if (textView.text?.toString() == COMMON_TITLE) return
+                textView.text = COMMON_TITLE
+                Log.i(TAG, "COMMON header_renamed pos=" + position)
+                return
+            }
+        } catch (throwable: Throwable) {
+            Log.i(TAG, "COMMON rename_fail " + throwable)
+        }
+    }
+
+    private fun collectRecyclers(root: View, out: MutableList<ViewGroup>) {
+        if (root is ViewGroup) {
+            if (root.javaClass.name.contains("RecyclerView")) out.add(root)
+            for (index in 0 until root.childCount) collectRecyclers(root.getChildAt(index), out)
+        }
+    }
+
+    private fun firstText(root: View): android.widget.TextView? {
+        if (root is android.widget.TextView) return root
+        if (root is ViewGroup) {
+            for (index in 0 until root.childCount) {
+                firstText(root.getChildAt(index))?.let { return it }
+            }
+        }
+        return null
+    }
+
+    /** 条目的可用身份：key、entryBean 的包名/别名都收进来，避免 key 不是包名时匹配不上。 */
+    private fun entryIds(entry: Any): List<String> {
+        val ids = ArrayList<String>(4)
+        (getKey.call(entry) as? String)?.takeIf { it.isNotEmpty() }?.let { ids.add(it) }
+        val bean = try {
+            getEntry.call(entry)
+        } catch (_: RuntimeException) {
+            null
+        }
+        if (bean != null) {
+            bean.javaClass.methods
+                .filter { it.parameterCount == 0 && it.returnType == String::class.java }
+                .filter { it.name == "getPkg" || it.name == "getPackageName" || it.name == "getAlias" || it.name == "getMAlias" }
+                .forEach { method ->
+                    (runCatching { method.invoke(bean) }.getOrNull() as? String)
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let { ids.add(it) }
+                }
+            try {
+                bean.javaClass.declaredFields
+                    .filter { it.name == "pkg" || it.name == "mPkg" }
+                    .forEach { field ->
+                        field.isAccessible = true
+                        (field.get(bean) as? String)?.takeIf { it.isNotEmpty() }?.let { ids.add(it) }
+                    }
+            } catch (_: RuntimeException) {
+            }
+        }
+        return ids
+    }
+
+    private fun isTitle(item: Any?): Boolean =
+        item?.javaClass?.simpleName?.contains("Title") == true
+
+    private fun titleText(item: Any?): String? = try {
+        item?.javaClass?.getMethod("getText")?.invoke(item)?.toString()
+    } catch (_: RuntimeException) {
+        null
+    }
+
+    /** 复制一个已有的标题项，只把文案换成 [COMMON_TITLE]。 */
+    private fun makeTitle(template: Any?): Any? {
+        if (template == null) return null
+        return try {
+            val type = template.javaClass
+            val copy = type.getDeclaredConstructor().newInstance()
+            type.declaredFields.forEach { field ->
+                try {
+                    field.isAccessible = true
+                    field.set(copy, field.get(template))
+                } catch (_: RuntimeException) {
+                }
+            }
+            try {
+                type.getDeclaredField("text").apply { isAccessible = true }.set(copy, COMMON_TITLE)
+            } catch (_: RuntimeException) {
+            }
+            copy
+        } catch (throwable: Throwable) {
+            Log.i(TAG, "COMMON title_fail " + throwable)
+            null
+        }
+    }
+
+    /**
+     * 最近使用过的应用包名。
+     *
+     * 首帧同步查一次（要等数据，躲不掉），之后走 15 秒缓存 + 后台刷新：
+     * 主线程不再为统计查询付跨进程反序列化的代价。
+     */
+    private fun recentPackages(): List<String> {
+        val now = System.currentTimeMillis()
+        val cached = recentCache
+        if (cached.isNotEmpty()) {
+            if (now - recentCachedAt >= RECENT_CACHE_MS) refreshRecentAsync()
+            return cached
+        }
+        val fresh = queryRecentPackages()
+        if (fresh.isNotEmpty()) {
+            recentCache = fresh
+            recentCachedAt = System.currentTimeMillis()
+        }
+        return fresh
+    }
+
+    private fun refreshRecentAsync() {
+        if (!recentRefreshing.compareAndSet(false, true)) return
+        try {
+            recentExecutor.execute {
+                try {
+                    val fresh = queryRecentPackages()
+                    if (fresh.isNotEmpty()) {
+                        recentCache = fresh
+                        recentCachedAt = System.currentTimeMillis()
+                        Log.i(TAG, "COMMON refreshed=" + fresh.size)
+                    }
+                } catch (throwable: Throwable) {
+                    Log.i(TAG, "COMMON refresh_fail " + throwable)
+                } finally {
+                    recentRefreshing.set(false)
+                }
+            }
+        } catch (throwable: Throwable) {
+            recentRefreshing.set(false)
+            Log.i(TAG, "COMMON refresh_submit_fail " + throwable)
+        }
+    }
+
+    /** 先用 24 小时窗口（事件量小得多），不够 12 条再退到 7 天。 */
+    private fun queryRecentPackages(): List<String> {
+        val manager =
+            context.getSystemService(Context.USAGE_STATS_SERVICE) as? android.app.usage.UsageStatsManager
+        if (manager == null) {
+            Log.i(TAG, "COMMON usm=null")
+            return emptyList()
+        }
+        val end = System.currentTimeMillis()
+        var names = mergeUsage(manager, end - RECENT_WINDOW_SHORT_MS, end)
+        if (names.size < COMMON_LIMIT) {
+            val longer = mergeUsage(manager, end - RECENT_WINDOW_MS, end)
+            if (longer.size > names.size) names = longer
+        }
+        Log.i(TAG, "COMMON usage=" + names.size + " top=" + names.take(3))
+        if (names.isEmpty()) {
+            names = systemRecentPackages()
+            Log.i(TAG, "COMMON fallback_sys=" + names.size)
+        }
+        return names
+    }
+
+    private fun mergeUsage(
+        manager: android.app.usage.UsageStatsManager,
+        begin: Long,
+        end: Long,
+    ): List<String> {
+        val aggregated = try {
+            manager.queryAndAggregateUsageStats(begin, end)
+        } catch (throwable: Throwable) {
+            Log.i(TAG, "COMMON agg_fail " + throwable)
+            null
+        }
+        val raw = try {
+            manager.queryUsageStats(
+                android.app.usage.UsageStatsManager.INTERVAL_DAILY,
+                begin,
+                end,
+            )
+        } catch (throwable: Throwable) {
+            Log.i(TAG, "COMMON raw_fail " + throwable)
+            null
+        }
+        val merged = LinkedHashMap<String, Long>()
+        aggregated?.forEach { (name, stat) ->
+            if (stat != null && stat.lastTimeUsed > 0) merged[name] = stat.lastTimeUsed
+        }
+        raw?.forEach { stat ->
+            if (stat != null && stat.lastTimeUsed > 0) {
+                val known = merged[stat.packageName] ?: 0L
+                if (stat.lastTimeUsed > known) merged[stat.packageName] = stat.lastTimeUsed
+            }
+        }
+        return merged.entries.sortedByDescending { it.value }.map { it.key }
+    }
+
+    /** 兜底：直接问面板自己的「最近使用」列表。 */
+    private fun systemRecentPackages(): List<String> = try {
+        val panel = getMain.call(handler)?.let { getUser.call(it) }
+        val recent = panel?.javaClass?.getMethod("getRecentData")?.invoke(panel) as? List<*>
+        recent.orEmpty().filterNotNull()
+            .mapNotNull { getKey.call(it) as? String }
+            .distinct()
+    } catch (throwable: Throwable) {
+        Log.i(TAG, "COMMON sys_recent_fail " + throwable)
+        emptyList()
     }
 
     private fun reorderList(list: List<Any?>): List<Any?> {
@@ -430,6 +900,47 @@ internal class ColorOsAllAppsContent(
     }
 
     companion object {
+        /** 探针与诊断日志用的 tag。 */
+        private const val TAG = "FlymeFreeform"
+
+        /** 工具列表 hook 只装一次：窗口是每次打开新建的，实例字段挡不住重复 hook。 */
+        @Volatile
+        private var toolsHooked = false
+
+        /** 「常用」分组 hook 只装一次。 */
+        @Volatile
+        private var commonHooked = false
+
+        const val COMMON_TITLE = "最近"
+        const val COMMON_LIMIT = 12
+        const val COMMON_MIN_APPS = 20
+        const val RECENT_WINDOW_MS = 7L * 24 * 60 * 60 * 1000
+        const val RECENT_WINDOW_SHORT_MS = 24L * 60 * 60 * 1000
+        const val RECENT_CACHE_MS = 15_000L
+
+        /** 最近名单缓存：主线程只读它，过期再交给后台刷。 */
+        /** 我们自己的 SearchHelper 实例（弱引用）。官方「全部」页的实例不在里面。 */
+        private val ownSearches: MutableSet<Any> =
+            java.util.Collections.synchronizedSet(
+                java.util.Collections.newSetFromMap(java.util.WeakHashMap<Any, Boolean>()),
+            )
+
+        /** 我们插入的「常用」标题在适配器里的位置；-1 表示还没插过。 */
+        @Volatile
+        private var ourTitlePosition = -1
+
+        @Volatile
+        private var recentCache: List<String> = emptyList()
+
+        @Volatile
+        private var recentCachedAt = 0L
+
+        private val recentRefreshing = java.util.concurrent.atomic.AtomicBoolean(false)
+        private val recentExecutor =
+            java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+                Thread(task, "FlymeFreeform-Common").apply { isDaemon = true }
+            }
+
         const val ALL_CLASS = "com.oplus.smartsidebar.panelview.edgepanel.allpanel.AllAppPanelView"
         const val ADAPTER_CLASS = "com.oplus.smartsidebar.panelview.edgepanel.allpanel.AllAppRecyclerAdapter"
         const val ROUTER_CLASS = "com.oplus.smartsidebar.panelview.edgepanel.data.viewdatahandlers.AllAppDataHandlerImpl"

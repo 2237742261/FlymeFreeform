@@ -30,11 +30,11 @@ internal object ModulePreferences {
     const val KEY_RADIAL_VIBRATE_STRENGTH = "radial_vibrate_strength_v1"
     const val KEY_PAUSE_IN_LANDSCAPE = "pause_in_landscape"
     const val KEY_PAUSE_IN_GAME_MODE = "pause_in_game_mode"
-    const val DEFAULT_ENABLED = false
+    const val DEFAULT_ENABLED = true
     const val DEFAULT_CORNER_ENABLED = true
-    const val DEFAULT_CORNER_TRIGGER_RANGE_DP = 50
-    val DEFAULT_OUTSIDE_TAP_CLOSE_MODE = OutsideTapCloseMode.Disabled
-    const val DEFAULT_HANDLE_SWIPE_UP_TO_MINI_ENABLED = false
+    const val DEFAULT_CORNER_TRIGGER_RANGE_DP = 60
+    val DEFAULT_OUTSIDE_TAP_CLOSE_MODE = OutsideTapCloseMode.CaptionDoubleTap
+    const val DEFAULT_HANDLE_SWIPE_UP_TO_MINI_ENABLED = true
     const val DEFAULT_KEEP_AWAKE_ENABLED = false
     const val DEFAULT_RADIAL_VIBRATE_ENABLED = false
     const val DEFAULT_RADIAL_VIBRATE_STRENGTH = 60
@@ -43,8 +43,8 @@ internal object ModulePreferences {
 
     fun coerceRadialVibrateStrength(value: Int): Int =
         value.coerceIn(MIN_RADIAL_VIBRATE_STRENGTH, MAX_RADIAL_VIBRATE_STRENGTH)
-    const val DEFAULT_PAUSE_IN_LANDSCAPE = true
-    const val DEFAULT_PAUSE_IN_GAME_MODE = true
+    const val DEFAULT_PAUSE_IN_LANDSCAPE = false
+    const val DEFAULT_PAUSE_IN_GAME_MODE = false
     const val MIN_CORNER_TRIGGER_RANGE_DP = 24
     const val MAX_CORNER_TRIGGER_RANGE_DP = 160
     const val MAX_OUTER_PINNED_APPS = 6
