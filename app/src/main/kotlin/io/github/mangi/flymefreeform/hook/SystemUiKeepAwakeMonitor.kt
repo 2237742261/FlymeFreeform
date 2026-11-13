@@ -52,6 +52,7 @@ internal class SystemUiKeepAwakeMonitor(
     // 申请常亮时的前台应用；切到别的应用就立刻释放，让系统重新开始息屏计时。
     private var keepPackage: String? = null
     private var lastForegroundCheckAt = 0L
+    private var cachedTaskService: Any? = null
     private var lastBacklightRatio = -1f
     private var lastDumpsysAt = 0L
 
@@ -321,32 +322,77 @@ internal class SystemUiKeepAwakeMonitor(
     // 注意：桌面任务的 dumpsys 行是 `* Task{… type=home …}`，既没有 A= 也没有 I=，
     // 紧随其后那条 launcher 任务才有 `I=com.android.launcher/.Launcher`；
     // 所以不能只 grep `A=`（会跳过桌面、匹配到上一个应用自己的任务 → 回桌面不释放）。
+    /**
+     * 取前台包名。
+     *
+     * 以前是每 2 秒 fork 一次 `dumpsys activity activities | grep`，那是**全量 activity dump**，
+     * 一开常亮日常使用就卡。改成直接问 ActivityTaskManager 要 top task 的 stub，只走一次 binder，
+     * 不再起子进程。拿不到就返回 null（功能退化为「不自动释放」，但不再拖慢系统）。
+     */
     private fun foregroundPackage(): String? {
-        val process =
-            try {
-                Runtime.getRuntime().exec(
-                    arrayOf(
-                        "/system/bin/sh",
-                        "-c",
-                        "$ACTIVITY_DUMPSYS 2>/dev/null | $GREP_COMMAND -m3 -F ' * Task{'",
-                    ),
-                )
-            } catch (exception: Exception) {
-                logThrottled("KEEP_AWAKE_FOREGROUND_EXEC_FAILED", exception)
-                return null
+        val service = activityTaskService() ?: return null
+        val candidates =
+            service.javaClass.methods.filter { method ->
+                method.name == "getTasks" && method.returnType == List::class.java
             }
-        val lines =
-            try {
-                BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
-                    generateSequence { reader.readLine() }.take(3).toList()
+        for (method in candidates) {
+            val result =
+                try {
+                    when (method.parameterTypes.size) {
+                        4 ->
+                            method.invoke(
+                                service,
+                                1,
+                                false,
+                                false,
+                                DEFAULT_DISPLAY,
+                            )
+                        3 -> method.invoke(service, 1, false, false)
+                        2 -> method.invoke(service, 1, false)
+                        1 -> method.invoke(service, 1)
+                        else -> null
+                    } as? List<*>
+                } catch (exception: ReflectiveOperationException) {
+                    logThrottled("KEEP_AWAKE_TASKS_REFLECTION_FAILED", exception)
+                    null
+                } catch (exception: RuntimeException) {
+                    null
+                } ?: continue
+            val task = result.firstOrNull() ?: continue
+            packageOfTask(task)?.let { return it }
+        }
+        return null
+    }
+
+    private fun activityTaskService(): Any? {
+        cachedTaskService?.let { return it }
+        return try {
+            val type = Class.forName("android.app.ActivityTaskManager")
+            val service = type.getMethod("getService").invoke(null)
+            service?.also { cachedTaskService = it }
+        } catch (exception: ReflectiveOperationException) {
+            logThrottled("KEEP_AWAKE_TASK_SERVICE_UNAVAILABLE", exception)
+            null
+        } catch (exception: RuntimeException) {
+            null
+        }
+    }
+
+    private fun packageOfTask(task: Any): String? {
+        for (field in arrayOf("topActivity", "baseActivity")) {
+            val component =
+                try {
+                    task.javaClass.getField(field).get(task)
+                } catch (_: ReflectiveOperationException) {
+                    null
+                } ?: continue
+            val name =
+                try {
+                    component.javaClass.getMethod("getPackageName").invoke(component) as? String
+                } catch (_: ReflectiveOperationException) {
+                    null
                 }
-            } catch (exception: Exception) {
-                emptyList()
-            }
-        process.destroy()
-        for (line in lines) {
-            AFFINITY_PATTERN.find(line)?.let { return it.groupValues[1] }
-            COMPONENT_PATTERN.find(line)?.let { return it.groupValues[1] }
+            if (!name.isNullOrEmpty()) return name
         }
         return null
     }
@@ -404,6 +450,7 @@ internal class SystemUiKeepAwakeMonitor(
         const val BRIGHT_RATIO = 0.75f
         const val DUMPSYS_FALLBACK_INTERVAL_MS = 1_500L
         const val FOREGROUND_POLL_MS = 2_000L
+        const val DEFAULT_DISPLAY = 0
         const val ACTIVITY_DUMPSYS = "/system/bin/dumpsys activity activities"
         val AFFINITY_PATTERN = Regex("A=[0-9]+:([A-Za-z0-9_.]+)")
         val COMPONENT_PATTERN = Regex("I=([A-Za-z0-9_.]+)")
