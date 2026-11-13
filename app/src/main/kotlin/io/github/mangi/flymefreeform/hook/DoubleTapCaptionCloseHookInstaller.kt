@@ -3,19 +3,24 @@ package io.github.mangi.flymefreeform.hook
 import android.annotation.SuppressLint
 import android.os.SystemClock
 import android.util.Log
+import android.view.MotionEvent
 import io.github.libxposed.api.XposedInterface
-import io.github.mangi.flymefreeform.config.OutsideTapCloseMode
 import io.github.libxposed.api.XposedModule
+import io.github.mangi.flymefreeform.config.OutsideTapCloseMode
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import kotlin.math.abs
 
 /**
  * 双击小窗底部横条关闭小窗。
  *
- * 只有「普通小窗（中窗）」才有小白条，双击它才关闭；迷你小窗没有小白条，
- * 双击走 ColorOS 原生的「与前台应用交换」，必须放行。
+ * 关键：挂的是 `FlexibleTaskCaptionView.dispatchTouchEvent`，**不是 `onDoubleTap`**，而且
+ * **原厂逻辑照常执行**。以前去截 `onDoubleTap` 并跳过 proceed，会把 ColorOS 自己那个
+ * 双击监听器（`android.telephony.Broum`）依赖的字段饿成 null，它继续往下走就拆箱炸，
+ * system_server 直接重启（实测中窗双击白条稳定复现）。
  *
- * 形态判定用原厂状态 [isTaskInFlexibleState]（1 = 普通小窗），不要自己量高度。
+ * 这里自己数双击：两次点击间隔 ≤ 350ms、位移在触摸阈值内，并且只对「普通小窗（中窗）」动手；
+ * 迷你小窗没有小白条，双击走原生互换，放行。
  */
 @SuppressLint("PrivateApi")
 internal class DoubleTapCaptionCloseHookInstaller(
@@ -23,6 +28,10 @@ internal class DoubleTapCaptionCloseHookInstaller(
     private val configuration: ProcessConfiguration,
     private val environment: ModuleEnvironmentState,
 ) {
+    private var lastTapAt = 0L
+    private var downAt = 0L
+    private var downX = 0f
+    private var downY = 0f
     private var lastFailureLogAt = -FAILURE_LOG_INTERVAL_MS
 
     fun install(classLoader: ClassLoader) {
@@ -30,14 +39,11 @@ internal class DoubleTapCaptionCloseHookInstaller(
             val captionClass = classLoader.loadClass(CAPTION_VIEW_CLASS)
             val controllerClass = classLoader.loadClass(FLEXIBLE_TASK_CONTROLLER_CLASS)
             val taskClass = classLoader.loadClass(TASK_CLASS)
-            // onDoubleTap 有几个重载，按参数个数从常见到冷门依次试，避免签名猜错就整个 hook 不装。
-            val onDoubleTap =
-                captionClass.requiredMethodOrNull("onDoubleTap", 1)
-                    ?: captionClass.requiredMethodOrNull("onDoubleTap", 2)
-                    ?: captionClass.requiredMethodOrNull("onDoubleTap", 0)
-                    ?: throw NoSuchMethodException("onDoubleTap")
+            val dispatch =
+                captionClass.requiredMethodOrNull("dispatchTouchEvent", 1)
+                    ?: throw NoSuchMethodException("dispatchTouchEvent")
             // mTask / mFlexibleTaskController 声明在父类 FlexibleCaptionView 上，
-            // getDeclaredField 只看本类会直接抛异常（曾经的坑：hook 静默不装）。
+            // getDeclaredField 只看本类会直接抛异常（这个坑踩过）。
             val captionTaskField = captionClass.requiredField("mTask")
             val captionControllerField = captionClass.requiredField("mFlexibleTaskController")
             val isTaskInFlexibleState =
@@ -57,36 +63,75 @@ internal class DoubleTapCaptionCloseHookInstaller(
                         ),
                 )
 
-            module.log(Log.INFO, TAG, "CAPTION_DOUBLE_TAP_TARGET argCount=" + onDoubleTap.parameterCount)
             module
-                .hook(onDoubleTap)
+                .hook(dispatch)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .setId("flymefreeform.system.caption_double_tap_close")
                 .intercept { chain ->
-                    val settings = configuration.snapshot
-                    val allowed = environment.isModuleAllowed()
-                    val mode = settings.outsideTapCloseMode
-                    // 要关窗就不要再跑原厂那套双击逻辑：两次动作叠在一起会起两次「回桌面」转场，
-                    // 壁纸放大到 1.2 之后还原那一段被冲掉（实测日志：
-                    // OplusWallpaperSurfaceAnimation animation end matrix [1.2...] 后直接 IDLE）。
-                    if (allowed && mode == OutsideTapCloseMode.CaptionDoubleTap) {
-                        val closed =
-                            closeCaptionTask(
+                    val event = chain.getArg(0) as? MotionEvent
+                    // 原厂逻辑必须照跑：它在初始化 ColorOS 那个双击监听器依赖的状态。
+                    val result = chain.proceed()
+                    if (event != null) {
+                        val settings = configuration.snapshot
+                        if (environment.isModuleAllowed() &&
+                            settings.outsideTapCloseMode == OutsideTapCloseMode.CaptionDoubleTap
+                        ) {
+                            observeTap(
                                 captionTaskField,
                                 captionControllerField,
                                 isTaskInFlexibleState,
                                 exitFlexibleTask,
                                 chain.thisObject,
+                                event,
                             )
-                        if (closed) return@intercept null
+                        }
                     }
-                    chain.proceed()
+                    result
                 }
-            module.log(Log.INFO, TAG, "CAPTION_DOUBLE_TAP_HOOK_INSTALLED")
+            module.log(Log.INFO, TAG, "CAPTION_TAP_HOOK_INSTALLED", null)
         } catch (exception: ReflectiveOperationException) {
-            module.log(Log.WARN, TAG, "CAPTION_DOUBLE_TAP_TARGET_UNAVAILABLE", exception)
+            module.log(Log.WARN, TAG, "CAPTION_TAP_TARGET_UNAVAILABLE", exception)
         } catch (exception: LinkageError) {
-            module.log(Log.WARN, TAG, "CAPTION_DOUBLE_TAP_TARGET_LINKAGE_FAILED", exception)
+            module.log(Log.WARN, TAG, "CAPTION_TAP_TARGET_LINKAGE_FAILED", exception)
+        }
+    }
+
+    private fun observeTap(
+        captionTaskField: Field,
+        captionControllerField: Field,
+        isTaskInFlexibleState: Method,
+        exitFlexibleTask: Method,
+        caption: Any?,
+        event: MotionEvent,
+    ) {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downAt = SystemClock.uptimeMillis()
+                downX = event.x
+                downY = event.y
+            }
+            MotionEvent.ACTION_UP -> {
+                val now = SystemClock.uptimeMillis()
+                // 得先是个「点击」：按下没滑动太久、没飘太远。
+                if (now - downAt > TAP_MAX_MS) return
+                if (abs(event.x - downX) > touchSlop || abs(event.y - downY) > touchSlop) return
+                if (lastTapAt != 0L && now - lastTapAt <= DOUBLE_TAP_MS) {
+                    lastTapAt = 0L
+                    closeCaptionTask(
+                        captionTaskField,
+                        captionControllerField,
+                        isTaskInFlexibleState,
+                        exitFlexibleTask,
+                        caption,
+                    )
+                } else {
+                    lastTapAt = now
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                downAt = 0L
+                lastTapAt = 0L
+            }
         }
     }
 
@@ -96,30 +141,25 @@ internal class DoubleTapCaptionCloseHookInstaller(
         isTaskInFlexibleState: Method,
         exitFlexibleTask: Method,
         caption: Any?,
-    ): Boolean {
+    ) {
         try {
-            if (caption == null) return false
-            val task = captionTaskField.get(caption) ?: return false
-            // caption 自己握着所属的 controller，比全局那个可靠。
+            if (caption == null) return
+            val task = captionTaskField.get(caption) ?: return
             val controller =
-                captionControllerField.get(caption) ?: FlexibleTaskHandle.controller ?: return false
+                captionControllerField.get(caption) ?: FlexibleTaskHandle.controller ?: return
             val ordinary =
                 try {
                     isTaskInFlexibleState.invoke(controller, task, ORDINARY_FLEXIBLE_STATE) == true
                 } catch (_: ReflectiveOperationException) {
                     false
                 }
-            module.log(Log.INFO, TAG, "CAPTION_STATE_CHECK ordinary=" + ordinary)
-            if (!ordinary) return false
+            if (!ordinary) return
             exitFlexibleTask.invoke(controller, task, true, 0, 0)
-            module.log(Log.INFO, TAG, "CAPTION_DOUBLE_TAP_CLOSE")
-            return true
+            module.log(Log.DEBUG, TAG, "CAPTION_DOUBLE_TAP_CLOSE", null)
         } catch (exception: ReflectiveOperationException) {
-            logFailure("CAPTION_DOUBLE_TAP_CLOSE_REFLECTION_FAILED", exception)
-            return false
+            logFailure("CAPTION_CLOSE_REFLECTION_FAILED", exception)
         } catch (exception: RuntimeException) {
-            logFailure("CAPTION_DOUBLE_TAP_CLOSE_FAILED", exception)
-            return false
+            logFailure("CAPTION_CLOSE_FAILED", exception)
         }
     }
 
@@ -130,9 +170,15 @@ internal class DoubleTapCaptionCloseHookInstaller(
         module.log(Log.WARN, TAG, code, throwable)
     }
 
+    private val touchSlop: Float
+        get() = TOUCH_SLOP_DP * android.content.res.Resources.getSystem().displayMetrics.density
+
     private companion object {
         /** 原厂 FlexibleTask 状态：1 = 普通小窗（中窗）。 */
         const val ORDINARY_FLEXIBLE_STATE = 1
+        const val TAP_MAX_MS = 300L
+        const val DOUBLE_TAP_MS = 350L
+        const val TOUCH_SLOP_DP = 24f
         const val TAG = "FlymeFreeform"
         const val CAPTION_VIEW_CLASS = "com.android.server.wm.FlexibleTaskCaptionView"
         const val FLEXIBLE_TASK_CONTROLLER_CLASS = "com.android.server.wm.FlexibleTaskController"
