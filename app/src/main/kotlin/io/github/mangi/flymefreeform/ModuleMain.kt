@@ -4,7 +4,6 @@ import android.util.Log
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface
-import io.github.mangi.flymefreeform.hook.LauncherHookInstaller
 import io.github.mangi.flymefreeform.hook.ProcessConfiguration
 import io.github.mangi.flymefreeform.hook.SidebarHookInstaller
 import io.github.mangi.flymefreeform.platform.coloros.ColorOsSidebarTarget
@@ -78,10 +77,14 @@ class ModuleMain : XposedModule() {
                 SystemUiHookInstaller(this, settings).install(param.classLoader)
             }
 
+            // ColorOS 17.0.0 上「上滑回桌面/最近任务」仍由桌面进程的 TouchInteractionService 判定，
+            // system_server 的 SystemGesturesPointerEventListener / UAH 拦不住它，所以这条必须留。
             processName == PROCESS_LAUNCHER && param.packageName == PROCESS_LAUNCHER -> {
                 hooksInstalled = true
-                LauncherHookInstaller(this, settings).install(param.classLoader, param.applicationInfo)
+                io.github.mangi.flymefreeform.hook.LauncherHookInstaller(this, settings)
+                    .install(param.classLoader, param.applicationInfo)
             }
+
         }
     }
 
