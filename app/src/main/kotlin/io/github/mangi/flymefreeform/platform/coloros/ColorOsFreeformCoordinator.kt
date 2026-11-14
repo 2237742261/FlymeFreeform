@@ -58,6 +58,7 @@ internal class ColorOsFreeformCoordinator(
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private val launcher = ColorOsFreeformLauncher(context)
     private val sidebar = ColorOsSidebarClient(context, handler, logger)
+    private val keepAwakeDimWatcher = KeepAwakeDimWatcher(context, configuration, logger)
     private val appCatalog =
         ColorOsAppCatalog(context, catalogExecutor, logger) { snapshot ->
             handler.post {
@@ -157,6 +158,7 @@ internal class ColorOsFreeformCoordinator(
         handler.post {
             entryCatalog.start()
             environmentState.start(context)
+            keepAwakeDimWatcher.start()
             environmentState.observe { applySettings(configuration.snapshot) }
             registerPackageObserver()
             registerPinnedTargetsObserver()
