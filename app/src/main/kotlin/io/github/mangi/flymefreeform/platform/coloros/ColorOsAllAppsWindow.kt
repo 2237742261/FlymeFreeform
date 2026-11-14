@@ -277,11 +277,12 @@ internal class ColorOsAllAppsWindow(
     private fun placeCard() {
         if (closed || root.width <= 0 || root.height <= 0) return
         // 窗口铺满屏幕，card 用同一套几何算居中位置。
+        // 注意：这里只用系统栏安全区，**不要把输入法高度算进 insetBottom**——
+        // 面板是浮在输入法之上的（原版行为），把 IME 当 inset 会让搜索时卡片整个变矮。
         val safe = insets?.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-        val ime = insets?.getInsets(WindowInsets.Type.ime())?.bottom ?: 0
         val bounds = AllAppsPanelGeometry.calculate(
             root.width, root.height, dimensions, mode, leftSide,
-            safe?.left ?: 0, safe?.top ?: 0, safe?.right ?: 0, maxOf(safe?.bottom ?: 0, ime),
+            safe?.left ?: 0, safe?.top ?: 0, safe?.right ?: 0, safe?.bottom ?: 0,
         )
         val params = card.layoutParams as FrameLayout.LayoutParams
         if (params.width == bounds.width && params.height == bounds.height &&
