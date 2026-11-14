@@ -57,7 +57,14 @@ internal data class ColorOsLauncherInputTarget(
         // InputMonitor 属于桌面持有的隐藏类型；下方校验字段和方法签名，失败交由安装层回退。
         @SuppressLint("PrivateApi")
         private fun bind(loader: ClassLoader, symbols: LauncherDexQuery.Symbols): ColorOsLauncherInputTarget {
-            val service = loader.loadClass(LauncherDexQuery.SERVICE_CLASS)
+            val service =
+                LauncherDexQuery.SERVICE_CLASSES.firstNotNullOfOrNull { name ->
+                    try {
+                        loader.loadClass(name)
+                    } catch (_: ClassNotFoundException) {
+                        null
+                    }
+                } ?: throw ClassNotFoundException("LAUNCHER_DEX_SERVICE_MISSING")
             require(Context::class.java.isAssignableFrom(service))
             val input = service.getDeclaredMethod(symbols.inputMethod, InputEvent::class.java)
             require(input.returnType == Void.TYPE && !Modifier.isStatic(input.modifiers))
