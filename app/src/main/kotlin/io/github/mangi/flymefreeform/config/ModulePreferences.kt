@@ -5,6 +5,10 @@ internal object ModulePreferences {
     const val GROUP = "module_runtime"
     const val ACTION_PINNED_TARGETS_CHANGED =
         "com.eta.flymefreeform.action.PINNED_TARGETS_CHANGED"
+
+    /** system_server 侧检测到「压暗后又被点亮」，通知 SystemUI 弹常亮气泡。 */
+    const val ACTION_KEEP_AWAKE_DIM_LIT =
+        "com.eta.flymefreeform.action.KEEP_AWAKE_DIM_LIT"
     const val EXTRA_PINNED_TARGETS = "pinned_targets"
     const val EXTRA_PINS_SAVED = "pins_saved"
     const val EXTRA_INNER_PINNED_TARGETS = "inner_pinned_targets"
