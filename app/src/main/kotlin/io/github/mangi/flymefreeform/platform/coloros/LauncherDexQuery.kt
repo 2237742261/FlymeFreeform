@@ -7,9 +7,19 @@ import org.luckypray.dexkit.result.FieldUsingType
 
 /** 桌面输入适配的字节码证据；查询结果不持有 native bridge 或宿主对象。 */
 internal object LauncherDexQuery {
-    const val SERVICE_CLASS = "com.android.quickstep.OplusBaseTouchInteractionService"
+    /**
+     * 桌面手势服务。ColorOS 新版桌面把 `OplusBaseTouchInteractionService` 改名并混淆方法，
+     * 硬编码旧类名时会静默挂不上 hook（症状：触发区内「返回/多任务」等系统手势不再被压制，
+     * 与角手势、小窗动作同时触发）。照 Sillybomo/FlymeFreeform v0.2.7 的做法：
+     * 旧类优先、新类兜底，逐个试。
+     */
+    val SERVICE_CLASSES =
+        listOf(
+            "com.android.quickstep.OplusBaseTouchInteractionService",
+            "com.android.quickstep.TouchInteractionService",
+        )
     const val INPUT_MONITOR_CLASS = "android.view.InputMonitor"
-    const val RULE_VERSION = "launcher-input-v1-dexkit-2.3.0"
+    const val RULE_VERSION = "launcher-input-v2-dexkit-2.3.0"
 
     data class Symbols(
         val inputMethod: String,
@@ -19,7 +29,7 @@ internal object LauncherDexQuery {
     )
 
     fun find(bridge: DexKitBridge): Symbols {
-        val service = bridge.getClassData(SERVICE_CLASS)
+        val service = SERVICE_CLASSES.firstNotNullOfOrNull { name -> bridge.getClassData(name) }
             ?: throw NoSuchMethodException("LAUNCHER_DEX_SERVICE_MISSING")
         val input = service.methods.findMethod {
             matcher {
