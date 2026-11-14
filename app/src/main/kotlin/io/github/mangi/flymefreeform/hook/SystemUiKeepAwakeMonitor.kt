@@ -14,7 +14,6 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.os.VibrationEffect
-import android.provider.Settings
 import android.os.Vibrator
 import android.util.Log
 import android.view.Gravity
@@ -24,12 +23,17 @@ import android.view.WindowManager
 import android.widget.ImageView
 import io.github.libxposed.api.XposedModule
 import io.github.mangi.flymefreeform.R
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import io.github.mangi.flymefreeform.config.ModulePreferences
+import java.lang.reflect.Method
 
 /**
- * 临时屏幕常亮：屏幕压暗（DIM）之后用户点亮，弹一个气泡；点一下让当前屏幕保持常亮，
- * 息屏或再次点击即释放。气泡点击带震动反馈。
+ * 临时屏幕常亮：system_server 侧检测到「屏幕压暗后又被点亮」时发一条广播，这里弹一个气泡；
+ * 点一下让当前屏幕保持常亮，息屏或切到别的应用即释放。气泡点击带震动反馈。
+ *
+ * 压暗检测**不在这里做**：SystemUI 是 platform_app 域，读不到 /sys/class/backlight
+ * （openat 直接 EACCES），以前只能每 1.5 秒 fork 一次 dumpsys display 兜底，
+ * 那是全量显示状态 dump、跑在 system_server 主线程，会把桌面转场动画卡掉帧。
+ * 检测已搬到 `KeepAwakeDimWatcher`（system_server 内反射 PowerManagerService，纯内存读）。
  */
 @SuppressLint("PrivateApi")
 internal class SystemUiKeepAwakeMonitor(
@@ -44,7 +48,6 @@ internal class SystemUiKeepAwakeMonitor(
     private val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
 
     private var running = false
-    private var dimmed = false
     private var bubble: View? = null
     private var params: WindowManager.LayoutParams? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -53,16 +56,31 @@ internal class SystemUiKeepAwakeMonitor(
     private var keepPackage: String? = null
     private var lastForegroundCheckAt = 0L
     private var cachedTaskService: Any? = null
-    private var lastBacklightRatio = -1f
-    private var lastDumpsysAt = 0L
+    private var focusMethod: Method? = null
+    private var focusProbed = false
 
     private val screenOffReceiver =
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action != Intent.ACTION_SCREEN_OFF) return
-                dimmed = false
                 releaseScreenOn()
                 dismissBubble()
+            }
+        }
+
+    /** system_server 的 KeepAwakeDimWatcher 只在「压暗后又被点亮」时发这一条。 */
+    private val dimLitReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(receiverContext: Context?, intent: Intent?) {
+                if (intent?.action != ModulePreferences.ACTION_KEEP_AWAKE_DIM_LIT) return
+                if (!configuration.snapshot.keepAwakeEnabled) return
+                if (!powerManager.isInteractive) return
+                if (isKeyguardLocked()) {
+                    module.log(Log.INFO, TAG, "KEEP_AWAKE_BUBBLE_SKIP keyguard")
+                    return
+                }
+                module.log(Log.INFO, TAG, "KEEP_AWAKE_BUBBLE_EVENT")
+                showBubble()
             }
         }
 
@@ -78,6 +96,15 @@ internal class SystemUiKeepAwakeMonitor(
         } catch (exception: RuntimeException) {
             module.log(Log.WARN, TAG, "KEEP_AWAKE_RECEIVER_FAILED", exception)
         }
+        try {
+            context.registerReceiver(
+                dimLitReceiver,
+                IntentFilter(ModulePreferences.ACTION_KEEP_AWAKE_DIM_LIT),
+                Context.RECEIVER_EXPORTED,
+            )
+        } catch (exception: RuntimeException) {
+            module.log(Log.WARN, TAG, "KEEP_AWAKE_DIM_RECEIVER_FAILED", exception)
+        }
         handler.post(poll)
         module.log(Log.INFO, TAG, "KEEP_AWAKE_MONITOR_START")
     }
@@ -88,7 +115,6 @@ internal class SystemUiKeepAwakeMonitor(
                 if (!running) return
                 try {
                     if (configuration.snapshot.keepAwakeEnabled) {
-                        tick()
                         watchForegroundApp()
                     } else if (bubble != null) {
                         dismissBubble()
@@ -98,107 +124,6 @@ internal class SystemUiKeepAwakeMonitor(
                 }
                 handler.postDelayed(this, POLL_INTERVAL_MS)
             }
-        }
-
-    private fun tick() {
-        // 息屏时没必要每拍都检测（息屏的释放由 SCREEN_OFF 广播负责）。
-        if (!powerManager.isInteractive) return
-        val ratio = backlightRatio()
-        if (ratio == null) {
-            // 没有 backlight 节点时退回 dumpsys 兜底（低频，避免 fork 开销）
-            val now = SystemClock.uptimeMillis()
-            if (now - lastDumpsysAt < DUMPSYS_FALLBACK_INTERVAL_MS) return
-            lastDumpsysAt = now
-            val state = readDisplayPolicy() ?: return
-            when {
-                state == STATE_DIM -> dimmed = true
-                state == STATE_OFF -> {
-                    dimmed = false
-                    releaseScreenOn()
-                }
-                dimmed -> {
-                    dimmed = false
-                    if (!isKeyguardLocked()) showBubble()
-                }
-            }
-            return
-        }
-        // 事件式判定：实际背光相对「设定亮度」突然掉下去 = 压暗；回到设定值 = 点亮。
-        when {
-            ratio < DIM_RATIO && (lastBacklightRatio - ratio) > DIM_DROP -> {
-                dimmed = true
-                module.log(Log.DEBUG, TAG, "KEEP_AWAKE_DIM_DETECTED ratio=$ratio")
-            }
-            ratio > BRIGHT_RATIO && dimmed -> {
-                dimmed = false
-                module.log(Log.DEBUG, TAG, "KEEP_AWAKE_LIT_AGAIN ratio=$ratio")
-                if (!isKeyguardLocked()) showBubble()
-            }
-        }
-        lastBacklightRatio = ratio
-    }
-
-    // 读 /sys 背光并与系统设定亮度比值：一次文件读 + 一次内存读，微秒级，不必 fork dumpsys。
-    private fun backlightRatio(): Float? {
-        val actual =
-            try {
-                java.io.File(BACKLIGHT_PATH).readText().trim().toLongOrNull()
-            } catch (_: Exception) {
-                null
-            } ?: return null
-        val setting =
-            try {
-                Settings.System.getInt(
-                    context.contentResolver,
-                    Settings.System.SCREEN_BRIGHTNESS,
-                    -1,
-                )
-            } catch (_: Exception) {
-                -1
-            }
-        if (setting <= 0) return null
-        return actual.toFloat() / setting.toFloat()
-    }
-
-    /** 读 ColorOS 的显示电源状态：压暗是 policy=DIM，正常为 BRIGHT。 */
-    private fun readDisplayPolicy(): Int? {
-        val process =
-            try {
-                Runtime.getRuntime().exec(
-                    arrayOf(
-                        "/system/bin/sh",
-                        "-c",
-                        "$DUMPSYS_COMMAND 2>/dev/null | $GREP_COMMAND -m1 -E " +
-                            "'mScreenState=|mPendingRequestLocked=policy='",
-                    ),
-                )
-            } catch (exception: Exception) {
-                logThrottled("KEEP_AWAKE_EXEC_FAILED", exception)
-                return null
-            }
-        val output =
-            try {
-                BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
-                    reader.readLine().orEmpty()
-                }
-            } catch (exception: Exception) {
-                null
-            }
-        process.destroy()
-        val line = output ?: return null
-        return when {
-            line.contains("DIM") -> STATE_DIM
-            line.contains("OFF") || line.contains("DOZE") -> STATE_OFF
-            line.contains("BRIGHT") || line.contains("ON") -> STATE_BRIGHT
-            else -> null
-        }
-    }
-
-    private fun isKeyguardLocked(): Boolean =
-        try {
-            (context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
-        } catch (exception: RuntimeException) {
-            false
         }
 
     private fun showBubble() {
@@ -318,50 +243,35 @@ internal class SystemUiKeepAwakeMonitor(
         }
     }
 
-    // 顶层任务的包名；拿不到就返回 null，避免误判释放。
-    // 注意：桌面任务的 dumpsys 行是 `* Task{… type=home …}`，既没有 A= 也没有 I=，
-    // 紧随其后那条 launcher 任务才有 `I=com.android.launcher/.Launcher`；
-    // 所以不能只 grep `A=`（会跳过桌面、匹配到上一个应用自己的任务 → 回桌面不释放）。
     /**
-     * 取前台包名。
+     * 取当前焦点任务的包名。
      *
-     * 以前是每 2 秒 fork 一次 `dumpsys activity activities | grep`，那是**全量 activity dump**，
-     * 一开常亮日常使用就卡。改成直接问 ActivityTaskManager 要 top task 的 stub，只走一次 binder，
-     * 不再起子进程。拿不到就返回 null（功能退化为「不自动释放」，但不再拖慢系统）。
+     * 走 `ActivityTaskManager.getFocusedRootTaskInfo()`（只取焦点那一个任务），
+     * 比 `getTasks(...)` 轻得多——后者要在 system_server 侧组装整个任务列表再序列化回来。
+     * 拿不到就返回 null，避免误判释放。
      */
     private fun foregroundPackage(): String? {
         val service = activityTaskService() ?: return null
-        val candidates =
-            service.javaClass.methods.filter { method ->
-                method.name == "getTasks" && method.returnType == List::class.java
-            }
-        for (method in candidates) {
-            val result =
+        if (!focusProbed) {
+            focusProbed = true
+            focusMethod =
                 try {
-                    when (method.parameterTypes.size) {
-                        4 ->
-                            method.invoke(
-                                service,
-                                1,
-                                false,
-                                false,
-                                DEFAULT_DISPLAY,
-                            )
-                        3 -> method.invoke(service, 1, false, false)
-                        2 -> method.invoke(service, 1, false)
-                        1 -> method.invoke(service, 1)
-                        else -> null
-                    } as? List<*>
+                    service.javaClass.getMethod("getFocusedRootTaskInfo")
                 } catch (exception: ReflectiveOperationException) {
-                    logThrottled("KEEP_AWAKE_TASKS_REFLECTION_FAILED", exception)
+                    module.log(Log.WARN, TAG, "KEEP_AWAKE_FOCUS_TASK_METHOD_MISSING", exception)
                     null
-                } catch (exception: RuntimeException) {
-                    null
-                } ?: continue
-            val task = result.firstOrNull() ?: continue
-            packageOfTask(task)?.let { return it }
+                }
         }
-        return null
+        val method = focusMethod ?: return null
+        val info =
+            try {
+                method.invoke(service)
+            } catch (exception: ReflectiveOperationException) {
+                focusMethod = null
+                logThrottled("KEEP_AWAKE_FOCUS_TASK_FAILED", exception)
+                null
+            } ?: return null
+        return packageOfTask(info)
     }
 
     private fun activityTaskService(): Any? {
@@ -410,6 +320,13 @@ internal class SystemUiKeepAwakeMonitor(
         }
     }
 
+    private fun isKeyguardLocked(): Boolean =
+        try {
+            (context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
+        } catch (exception: RuntimeException) {
+            false
+        }
+
     private fun loadBubbleIcon() =
         try {
             val moduleContext =
@@ -440,20 +357,9 @@ internal class SystemUiKeepAwakeMonitor(
     private companion object {
         const val TAG = "FlymeFreeform"
         const val MODULE_PACKAGE = "com.eta.flymefreeform"
-        const val DUMPSYS_COMMAND = "/system/bin/dumpsys display"
-        const val GREP_COMMAND = "/system/bin/grep"
         const val WAKE_LOCK_TAG = "flymefreeform:keep"
-        const val POLL_INTERVAL_MS = 500L
-        const val BACKLIGHT_PATH = "/sys/class/backlight/panel0-backlight/brightness"
-        const val DIM_RATIO = 0.62f
-        const val DIM_DROP = 0.15f
-        const val BRIGHT_RATIO = 0.75f
-        const val DUMPSYS_FALLBACK_INTERVAL_MS = 1_500L
+        const val POLL_INTERVAL_MS = 1_000L
         const val FOREGROUND_POLL_MS = 2_000L
-        const val DEFAULT_DISPLAY = 0
-        const val ACTIVITY_DUMPSYS = "/system/bin/dumpsys activity activities"
-        val AFFINITY_PATTERN = Regex("A=[0-9]+:([A-Za-z0-9_.]+)")
-        val COMPONENT_PATTERN = Regex("I=([A-Za-z0-9_.]+)")
         const val BUBBLE_AUTO_DISMISS_MS = 6_000L
         const val BUBBLE_SIZE_DP = 44
         const val BUBBLE_MARGIN_X_DP = 12
@@ -462,8 +368,5 @@ internal class SystemUiKeepAwakeMonitor(
         const val VIBRATE_AMPLITUDE = 255
         const val LOG_INTERVAL_MS = 10_000L
         const val COLOR_FALLBACK_BACKGROUND = 0xFFF2B01E.toInt()
-        const val STATE_DIM = 1
-        const val STATE_BRIGHT = 2
-        const val STATE_OFF = 3
     }
 }
