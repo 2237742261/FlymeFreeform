@@ -616,7 +616,10 @@ internal class ColorOsAllAppsContent(
         }
     }
 
-    /** 先用 24 小时窗口（事件量小得多），不够 12 条再退到 7 天。 */
+    /**
+     * 近 3 天的打开次数 / 前台时长。用 INTERVAL_DAILY 的日桶聚合，跨进程只回几百条，
+     * 比数事件流轻得多；窗口是滑动的（今天往前 3 天），旧数据自己过期，不需要本地累加。
+     */
     private fun queryRecentPackages(): List<String> {
         val manager =
             context.getSystemService(Context.USAGE_STATS_SERVICE) as? android.app.usage.UsageStatsManager
@@ -625,52 +628,86 @@ internal class ColorOsAllAppsContent(
             return emptyList()
         }
         val end = System.currentTimeMillis()
-        var names = mergeUsage(manager, end - RECENT_WINDOW_SHORT_MS, end)
-        if (names.size < COMMON_LIMIT) {
-            val longer = mergeUsage(manager, end - RECENT_WINDOW_MS, end)
-            if (longer.size > names.size) names = longer
+        val stats =
+            try {
+                manager.queryUsageStats(
+                    android.app.usage.UsageStatsManager.INTERVAL_DAILY,
+                    end - RECENT_WINDOW_MS,
+                    end,
+                )
+            } catch (throwable: Throwable) {
+                Log.i(TAG, "COMMON raw_fail " + throwable)
+                null
+            }.orEmpty()
+        val launches = HashMap<String, Int>()
+        val durations = HashMap<String, Long>()
+        val lastUsed = HashMap<String, Long>()
+        for (stat in stats) {
+            if (stat == null) continue
+            val name = stat.packageName ?: continue
+            launches[name] = (launches[name] ?: 0) + launchCount(stat)
+            durations[name] = (durations[name] ?: 0L) + stat.totalTimeInForeground
+            val used = stat.lastTimeUsed
+            if (used > (lastUsed[name] ?: 0L)) lastUsed[name] = used
         }
-        Log.i(TAG, "COMMON usage=" + names.size + " top=" + names.take(3))
-        if (names.isEmpty()) {
-            names = systemRecentPackages()
-            Log.i(TAG, "COMMON fallback_sys=" + names.size)
+        val ranked =
+            if (launchCountAvailable()) {
+                launches.keys
+                    .filter { name ->
+                        (launches[name] ?: 0) >= RECENT_MIN_LAUNCHES ||
+                            (durations[name] ?: 0L) >= RECENT_MIN_FOREGROUND_MS
+                    }.sortedWith(
+                        compareByDescending<String> { name -> launches[name] ?: 0 }
+                            .thenByDescending { name -> lastUsed[name] ?: 0L },
+                    )
+            } else {
+                // 拿不到打开次数时退化为「时长门槛 + 最后使用时间」，不至于整栏消失。
+                durations.keys
+                    .filter { name -> (durations[name] ?: 0L) >= RECENT_MIN_FOREGROUND_MS }
+                    .sortedByDescending { name -> lastUsed[name] ?: 0L }
+            }
+        Log.i(
+            TAG,
+            "COMMON usage=" + ranked.size +
+                " top=" + ranked.take(3).map { name -> name + ":" + (launches[name] ?: 0) },
+        )
+        if (ranked.isEmpty()) {
+            val fallback = systemRecentPackages()
+            Log.i(TAG, "COMMON fallback_sys=" + fallback.size)
+            return fallback
         }
-        return names
+        return ranked
     }
 
-    private fun mergeUsage(
-        manager: android.app.usage.UsageStatsManager,
-        begin: Long,
-        end: Long,
-    ): List<String> {
-        val aggregated = try {
-            manager.queryAndAggregateUsageStats(begin, end)
-        } catch (throwable: Throwable) {
-            Log.i(TAG, "COMMON agg_fail " + throwable)
-            null
-        }
-        val raw = try {
-            manager.queryUsageStats(
-                android.app.usage.UsageStatsManager.INTERVAL_DAILY,
-                begin,
-                end,
-            )
-        } catch (throwable: Throwable) {
-            Log.i(TAG, "COMMON raw_fail " + throwable)
-            null
-        }
-        val merged = LinkedHashMap<String, Long>()
-        aggregated?.forEach { (name, stat) ->
-            if (stat != null && stat.lastTimeUsed > 0) merged[name] = stat.lastTimeUsed
-        }
-        raw?.forEach { stat ->
-            if (stat != null && stat.lastTimeUsed > 0) {
-                val known = merged[stat.packageName] ?: 0L
-                if (stat.lastTimeUsed > known) merged[stat.packageName] = stat.lastTimeUsed
+    /** UsageStats.getAppLaunchCount() 是隐藏 API：先试方法，再试 mAppLaunchCount 字段，都没有就返回 0。 */
+    private fun launchCount(stat: android.app.usage.UsageStats): Int {
+        if (!launchCountProbed) {
+            launchCountProbed = true
+            launchCountGetter =
+                runCatching { stat.javaClass.getMethod("getAppLaunchCount") }.getOrNull()
+            if (launchCountGetter == null) {
+                launchCountField =
+                    runCatching { stat.javaClass.getField("mAppLaunchCount") }.getOrNull()
             }
+            Log.i(
+                TAG,
+                "COMMON launch_probe getter=" + (launchCountGetter != null) +
+                    " field=" + (launchCountField != null),
+            )
         }
-        return merged.entries.sortedByDescending { it.value }.map { it.key }
+        launchCountGetter?.let { getter ->
+            val value = runCatching { getter.invoke(stat) }.getOrNull()
+            (value as? Number)?.let { return it.toInt() }
+        }
+        launchCountField?.let { field ->
+            val value = runCatching { field.get(stat) }.getOrNull()
+            (value as? Number)?.let { return it.toInt() }
+        }
+        return 0
     }
+
+    private fun launchCountAvailable(): Boolean =
+        launchCountGetter != null || launchCountField != null
 
     /** 兜底：直接问面板自己的「最近使用」列表。 */
     private fun systemRecentPackages(): List<String> = try {
@@ -914,9 +951,11 @@ internal class ColorOsAllAppsContent(
         const val COMMON_TITLE = "最近"
         const val COMMON_LIMIT = 12
         const val COMMON_MIN_APPS = 20
-        const val RECENT_WINDOW_MS = 7L * 24 * 60 * 60 * 1000
-        const val RECENT_WINDOW_SHORT_MS = 24L * 60 * 60 * 1000
-        const val RECENT_CACHE_MS = 15_000L
+        const val RECENT_WINDOW_MS = 3L * 24 * 60 * 60 * 1000
+        /** 入榜门槛：近 3 天打开 ≥2 次，或累计前台 ≥60 秒。 */
+        const val RECENT_MIN_LAUNCHES = 2
+        const val RECENT_MIN_FOREGROUND_MS = 60_000L
+        const val RECENT_CACHE_MS = 60_000L
 
         /** 最近名单缓存：主线程只读它，过期再交给后台刷。 */
         /** 我们自己的 SearchHelper 实例（弱引用）。官方「全部」页的实例不在里面。 */
@@ -934,6 +973,10 @@ internal class ColorOsAllAppsContent(
 
         @Volatile
         private var recentCachedAt = 0L
+
+        private var launchCountGetter: java.lang.reflect.Method? = null
+        private var launchCountField: java.lang.reflect.Field? = null
+        private var launchCountProbed = false
 
         private val recentRefreshing = java.util.concurrent.atomic.AtomicBoolean(false)
         private val recentExecutor =
