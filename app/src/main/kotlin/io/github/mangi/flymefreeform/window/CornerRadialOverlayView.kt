@@ -517,7 +517,7 @@ internal class CornerRadialOverlayView(
             val centerY = layout.origin.y + (destination.y - layout.origin.y) * motion.radialProgress
             val ringProgress = itemRings.getOrNull(index)?.value ?: 0f
             // 手指滑到图标上时轻微放大，移开后回到原尺寸
-            val scale = motion.iconScale * contentScale * (1f + 0.12f * ringProgress)
+            val scale = motion.iconScale * contentScale * (1f + RadialIconGeometry.selectionGrowthAt(index, catalog.radialApps.size + 1) * ringProgress)
             val diameter = metrics.iconDiameter * scale
             rotate(motion.rotationDegrees, pivot = Offset(centerX, centerY)) {
                 if (index < catalog.radialApps.size) {
@@ -919,8 +919,6 @@ internal class CornerRadialOverlayView(
                 previous = selectedIndex,
                 enterRadius = metrics.radial.selectionEnterRadius,
                 keepRadius = metrics.radial.selectionKeepRadius,
-                outerCount = catalog.radialApps.size + 1,
-                innerRadius = metrics.radial.innerRadius,
                 iconRadius = metrics.radial.iconDiameter / 2f,
             )
         if (next == selectedIndex) return

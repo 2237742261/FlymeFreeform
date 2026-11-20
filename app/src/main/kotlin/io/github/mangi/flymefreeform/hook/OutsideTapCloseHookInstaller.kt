@@ -215,7 +215,7 @@ internal class OutsideTapCloseHookInstaller(
                     onFailure("OUTSIDE_TAP_REGION_REFRESH_FAILED", exception)
                 }
             }
-            if (!environmentAllowed() || !settings.enabled || settings.outsideTapCloseMode == OutsideTapCloseMode.Disabled) {
+            if (!environmentAllowed() || !settings.enabled || !settings.outsideTapCloseMode.capturesOutsideTouches) {
                 synchronized(protectedTasks) { protectedTasks.clear() }
             }
         }
@@ -232,7 +232,7 @@ internal class OutsideTapCloseHookInstaller(
                 if (settings.enabled && environmentAllowed()) settings.outsideTapCloseMode
                 else OutsideTapCloseMode.Disabled
             if (
-                mode == OutsideTapCloseMode.Disabled ||
+                !mode.capturesOutsideTouches ||
                     !isOrdinaryZoom(controller, task) ||
                     hasMenuShowing.invokeUnwrapped(controller) == true
             ) {
@@ -375,7 +375,7 @@ internal class OutsideTapCloseHookInstaller(
                     if (settings.enabled && environmentAllowed()) settings.outsideTapCloseMode
                     else OutsideTapCloseMode.Disabled
                 engine.updateMode(mode)
-                if (mode == OutsideTapCloseMode.Disabled) return@synchronized null
+                if (!mode.capturesOutsideTouches) return@synchronized null
                 when (event.actionMasked) {
                     MotionEvent.ACTION_POINTER_DOWN,
                     MotionEvent.ACTION_CANCEL,
@@ -437,7 +437,7 @@ internal class OutsideTapCloseHookInstaller(
             mode: OutsideTapCloseMode,
         ): Any? {
             if (
-                mode == OutsideTapCloseMode.Disabled ||
+                !mode.capturesOutsideTouches ||
                     isCanRespondEvent.invokeUnwrapped(controller) != true ||
                     event.pointerCount != 1 ||
                     event.getToolType(0) != MotionEvent.TOOL_TYPE_FINGER ||

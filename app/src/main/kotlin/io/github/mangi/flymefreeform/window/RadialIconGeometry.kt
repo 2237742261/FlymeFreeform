@@ -7,6 +7,16 @@ internal object RadialIconGeometry {
     private const val BASE_ICON_DIAMETER_DP = 50f
     private const val BASE_ITEM_PADDING_DP = 3.25f
     private const val RING_GAP_DP = 9.5f
+    // Retract the outer ring by 0.4 of the original icon radius; scale both rings and icons together.
+    private const val RADIAL_SCALE = (BASE_RADIUS_DP - BASE_ICON_DIAMETER_DP * 0.5f * 0.4f) / BASE_RADIUS_DP
+
+    const val SELECTION_GROWTH = 0.12f
+    // At seven outer slots, two adjacent highlights can animate at once.
+    private const val OUTER_SELECTION_GROWTH = 0.09f
+
+    fun selectionGrowthAt(index: Int, outerCount: Int): Float =
+        if (index < outerCount) OUTER_SELECTION_GROWTH else SELECTION_GROWTH
+    private const val OUTER_INSET_DP = 2f
 
     fun fit(
         width: Float,
@@ -28,12 +38,12 @@ internal object RadialIconGeometry {
             (BASE_RADIUS_DP + BASE_ICON_DIAMETER_DP * 1.05f / 2f + BASE_ITEM_PADDING_DP +
                 RadialEntryMotion.HORIZONTAL_OVERSHOOT_DP) * pixelsPerBaseDp
         val fitScale = minOf(1f, safeWidth / requestedExtent, safeHeight / requestedExtent)
-        val unit = pixelsPerBaseDp * fitScale
+        val unit = pixelsPerBaseDp * fitScale * RADIAL_SCALE
         val diameter = BASE_ICON_DIAMETER_DP * unit
         val innerRadius =
             (BASE_RADIUS_DP - BASE_ICON_DIAMETER_DP - RING_GAP_DP) * unit
         return RadialVisualMetrics(
-            radius = BASE_RADIUS_DP * unit,
+            radius = BASE_RADIUS_DP * unit - OUTER_INSET_DP * pixelsPerBaseDp * fitScale,
             innerRadius = innerRadius.coerceAtLeast(0f),
             plateDiameter = diameter,
             iconDiameter = diameter,

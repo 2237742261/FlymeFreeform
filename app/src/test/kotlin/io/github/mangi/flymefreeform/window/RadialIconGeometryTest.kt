@@ -16,11 +16,35 @@ class RadialIconGeometryTest {
     fun baselineMatchesFixedDimensionsForEveryItemCount() {
         for (count in 1..7) {
             val metrics = fit(count = count)
-            assertEquals(242f, metrics.radius, 0.001f)
-            assertEquals(44f, metrics.iconDiameter, 0.001f)
+            assertEquals(250f, metrics.radius, 0.001f)
+            assertEquals(50f * 252f / 262f, metrics.iconDiameter, 0.001f)
             assertEquals(metrics.iconDiameter, metrics.plateDiameter, 0f)
-            assertEquals(3.25f, metrics.itemPadding, 0.001f)
-            assertEquals(1f, metrics.pixelsPerBaseDp, 0.001f)
+            assertEquals(3.25f * 252f / 262f, metrics.itemPadding, 0.001f)
+            assertEquals(252f / 262f, metrics.pixelsPerBaseDp, 0.001f)
+        }
+    }
+
+    @Test
+    fun bothRingsKeepClearanceEvenWhenTwoSelectionAnimationsOverlap() {
+        val metrics = fit()
+        assertEquals(202.5f * 252f / 262f, metrics.innerRadius, 0.001f)
+        assertEquals(50f * 252f / 262f, metrics.iconDiameter, 0.001f)
+        for (side in CornerSide.entries) {
+            for (outerCount in 1..7) for (innerCount in 1..5) {
+                val layout = RadialGeometry.layoutRings(
+                    side, 400f, 890f, metrics.radius, outerCount, metrics.innerRadius, innerCount,
+                )
+                layout.itemCenters.forEachIndexed { index, center ->
+                    for (otherIndex in index + 1 until layout.itemCenters.size) {
+                        val other = layout.itemCenters[otherIndex]
+                        val combined = (metrics.iconDiameter *
+                            (1f + RadialIconGeometry.selectionGrowthAt(index, outerCount)) +
+                            metrics.iconDiameter *
+                            (1f + RadialIconGeometry.selectionGrowthAt(otherIndex, outerCount))) / 2f
+                        assertTrue(hypot(center.x - other.x, center.y - other.y) >= combined + 1f)
+                    }
+                }
+            }
         }
     }
 
@@ -59,7 +83,7 @@ class RadialIconGeometryTest {
         val full = fit()
         val narrow = fit(insets = insets)
         assertTrue(narrow.radius < full.radius)
-        assertEquals(242f / 44f, narrow.radius / narrow.iconDiameter, 0.001f)
+        assertEquals(full.radius / full.iconDiameter, narrow.radius / narrow.iconDiameter, 0.001f)
         assertEquals(0.9f, narrow.selectionEnterRadius / narrow.iconDiameter, 0.001f)
         assertEquals(1.25f, narrow.selectionKeepRadius / narrow.iconDiameter, 0.001f)
         for (count in 1..7) assertEquals(narrow, fit(insets = insets, count = count))

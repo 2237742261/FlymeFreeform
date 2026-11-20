@@ -46,6 +46,21 @@ internal class ProcessConfiguration(
         listeners.forEach { listener -> listener(next) }
     }
 
+    /** 不依赖跨进程回调/广播：主动重读一次远程偏好，用于「设置改了但进程收不到通知」的机型。 */
+    fun reload() {
+        val prefs = preferences ?: return
+        val before = snapshot
+        refresh(prefs, false)
+        if (snapshot != before) {
+            log(
+                Log.INFO,
+                "MODULE_CONFIG_RELOADED pins=" + snapshot.pinnedTargets.size +
+                    " inner=" + snapshot.innerPinnedTargets.size,
+                null,
+            )
+        }
+    }
+
     private fun refresh(preferences: SharedPreferences, initial: Boolean) {
         val next =
             try {

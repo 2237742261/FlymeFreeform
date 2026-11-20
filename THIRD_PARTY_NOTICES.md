@@ -15,3 +15,7 @@
 本项目保留原始透明 PNG 的图案与配色，增加白色自适应背景、比例留白与单色着色配置。图案的相关权利归原权利人所有，不属于本项目原创资源。固件内未发现该图标的独立再分发许可；公开分发前仍需确认相应授权，本声明不构成授权。
 
 Flyme 小窗是面向 ColorOS 的非官方独立实现，与魅族、Flyme、OPPO、ColorOS 及其关联方无关。使用该图案不代表上述主体对本项目的授权、背书或支持。
+
+## Hoerire/Free 功能移植（1.4.0）
+
+贴边挂机、迷你窗长按静音及所需的反射辅助代码移植自 Hoerire/Free，参考提交 `e167b3914d9d50fc713f13e80c261c236ab69de6`，原项目采用 GNU GPL v3.0： https://github.com/Hoerire/Free 。保留本工程根目录 LICENSE 所附 GPL-3.0 许可。导入后修改了包名、日志接入、配置读写与设置页、触摸事件调度和窗口退场静音恢复接入；保留原项目作者的代码说明。主要导入文件为 FloatKeepAliveHook.kt、WindowMuteHook.kt、OemClasses.kt、OemReflection.kt、ColorOsWindowGestures.kt、ColorOsFlexibleWindowState.kt、WindowMuteEvents.kt。

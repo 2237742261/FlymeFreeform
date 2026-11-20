@@ -8,6 +8,8 @@ internal enum class OutsideTapCloseMode(val storedValue: Int) {
     CaptionDoubleTap(3),
     ;
 
+    val capturesOutsideTouches: Boolean get() = this == SingleTap || this == DoubleTap
+
     companion object {
         fun fromStoredValue(value: Int): OutsideTapCloseMode =
             entries.firstOrNull { it.storedValue == value } ?: Disabled

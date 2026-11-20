@@ -194,6 +194,7 @@ internal class LauncherHookInstaller(
         if (event.pointerCount != 1 || event.getToolType(0) != MotionEvent.TOOL_TYPE_FINGER) return null
         startEnvironment(owner)
         if (!environmentState.isGestureAllowed(refreshKeyguard = true)) return null
+        if (android.provider.Settings.Global.getInt(owner.contentResolver, "flyme_ff_catalog_ready", 0) != 1) return null
 
         val metrics = owner.resources.displayMetrics
         val width = metrics.widthPixels.toFloat()

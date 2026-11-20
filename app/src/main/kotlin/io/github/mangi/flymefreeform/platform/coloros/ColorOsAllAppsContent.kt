@@ -10,6 +10,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.core.view.isNotEmpty
+import io.github.mangi.flymefreeform.hook.ProcessConfiguration
 import io.github.mangi.flymefreeform.window.AllAppsPanelGeometry
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
@@ -19,8 +20,15 @@ import java.lang.reflect.Proxy
 internal class ColorOsAllAppsContent(
     loader: ClassLoader,
     target: ColorOsSidebarVisualTarget,
+    private val configuration: ProcessConfiguration,
     private val module: io.github.libxposed.api.XposedModule,
 ) {
+    init {
+        // 每次打开「更多」面板都重读一次配置，保证「最近」栏的轮盘排除项是最新的
+        // （广播正常时是保险，广播失效的机型就靠这一次兜底）。
+        configuration.reload()
+    }
+
     private val allClass = loader.loadClass(ALL_CLASS)
     private val searchClass = loader.loadClass(SEARCH_CLASS)
     private val mainClass = loader.loadClass(MAIN_CLASS)
@@ -407,10 +415,11 @@ internal class ColorOsAllAppsContent(
                     " keys=" + apps.take(3).map { getKey.call(it) } +
                     " recent=" + recent.take(3),
             )
-            val picked = ArrayList<Any>()
+            val excluded = pinnedPackages()
+            val picked = LinkedHashSet<Any>()
             for (name in recent) {
                 if (picked.size >= COMMON_LIMIT) break
-                byPackage[name]?.let { picked.add(it) }
+                if (name.substringBefore('#') !in excluded) byPackage[name]?.let { picked.add(it) }
             }
             if (picked.isEmpty()) {
                 Log.i(TAG, "COMMON empty ids=" + byPackage.size)
@@ -430,7 +439,7 @@ internal class ColorOsAllAppsContent(
             Log.i(
                 TAG,
                 "COMMON injected=" + picked.size + " at=" + at + " titles=" + titles +
-                    " first=" + getKey.call(picked[0]),
+                    " first=" + getKey.call(picked.first()),
             )
             scheduleHeaderRename()
         } catch (throwable: Throwable) {
@@ -575,7 +584,7 @@ internal class ColorOsAllAppsContent(
     /**
      * 最近使用过的应用包名。
      *
-     * 首帧同步查一次（要等数据，躲不掉），之后走 15 秒缓存 + 后台刷新：
+     * 首帧同步查一次（要等数据，躲不掉），之后走 30 分钟缓存 + 后台刷新：
      * 主线程不再为统计查询付跨进程反序列化的代价。
      */
     private fun recentPackages(): List<String> {
@@ -617,8 +626,8 @@ internal class ColorOsAllAppsContent(
     }
 
     /**
-     * 近 3 天的打开次数 / 前台时长。用 INTERVAL_DAILY 的日桶聚合，跨进程只回几百条，
-     * 比数事件流轻得多；窗口是滑动的（今天往前 3 天），旧数据自己过期，不需要本地累加。
+     * 近 7 天的打开次数 / 前台时长。用 INTERVAL_DAILY 的日桶聚合，跨进程只回几百条，
+     * 比数事件流轻得多；窗口是滑动的（今天往前 7 天），旧数据自己过期，不需要本地累加。
      */
     private fun queryRecentPackages(): List<String> {
         val manager =
@@ -641,41 +650,38 @@ internal class ColorOsAllAppsContent(
             }.orEmpty()
         val launches = HashMap<String, Int>()
         val durations = HashMap<String, Long>()
-        val lastUsed = HashMap<String, Long>()
         for (stat in stats) {
             if (stat == null) continue
             val name = stat.packageName ?: continue
             launches[name] = (launches[name] ?: 0) + launchCount(stat)
             durations[name] = (durations[name] ?: 0L) + stat.totalTimeInForeground
-            val used = stat.lastTimeUsed
-            if (used > (lastUsed[name] ?: 0L)) lastUsed[name] = used
         }
         val ranked =
             if (launchCountAvailable()) {
                 launches.keys
                     .filter { name ->
-                        (launches[name] ?: 0) >= RECENT_MIN_LAUNCHES ||
-                            (durations[name] ?: 0L) >= RECENT_MIN_FOREGROUND_MS
+                        name != MODULE_PACKAGE &&
+                            ((launches[name] ?: 0) >= RECENT_MIN_LAUNCHES ||
+                                (durations[name] ?: 0L) >= RECENT_MIN_FOREGROUND_MS)
                     }.sortedWith(
                         compareByDescending<String> { name -> launches[name] ?: 0 }
-                            .thenByDescending { name -> lastUsed[name] ?: 0L },
+                            .thenByDescending { name -> (durations[name] ?: 0L) / 300_000L }
+                            .thenBy { it },
                     )
             } else {
-                // 拿不到打开次数时退化为「时长门槛 + 最后使用时间」，不至于整栏消失。
+                // 拿不到打开次数时退化为「时长门槛 + 使用时长」，不至于整栏消失。
                 durations.keys
-                    .filter { name -> (durations[name] ?: 0L) >= RECENT_MIN_FOREGROUND_MS }
-                    .sortedByDescending { name -> lastUsed[name] ?: 0L }
+                    .filter { name ->
+                        name != MODULE_PACKAGE &&
+                            (durations[name] ?: 0L) >= RECENT_MIN_FOREGROUND_MS
+                    }
+                    .sortedWith(compareByDescending<String> { (durations[it] ?: 0L) / 300_000L }.thenBy { it })
             }
         Log.i(
             TAG,
             "COMMON usage=" + ranked.size +
                 " top=" + ranked.take(3).map { name -> name + ":" + (launches[name] ?: 0) },
         )
-        if (ranked.isEmpty()) {
-            val fallback = systemRecentPackages()
-            Log.i(TAG, "COMMON fallback_sys=" + fallback.size)
-            return fallback
-        }
         return ranked
     }
 
@@ -709,16 +715,18 @@ internal class ColorOsAllAppsContent(
     private fun launchCountAvailable(): Boolean =
         launchCountGetter != null || launchCountField != null
 
-    /** 兜底：直接问面板自己的「最近使用」列表。 */
-    private fun systemRecentPackages(): List<String> = try {
-        val panel = getMain.call(handler)?.let { getUser.call(it) }
-        val recent = panel?.javaClass?.getMethod("getRecentData")?.invoke(panel) as? List<*>
-        recent.orEmpty().filterNotNull()
-            .mapNotNull { getKey.call(it) as? String }
-            .distinct()
-    } catch (throwable: Throwable) {
-        Log.i(TAG, "COMMON sys_recent_fail " + throwable)
-        emptyList()
+    /**
+     * 轮盘上已经有的应用，从「最近」里剔掉——同一个应用没必要在两处重复出现。
+     * App 型固定项直接有包名；Sidebar 型的 alias 可能是 `pkg#activity` 也可能是工具 key，
+     * 按 `#` 切一刀取前半段，工具 key 匹配不到包名，自然被忽略。
+     */
+    private fun pinnedPackages(): Set<String> {
+        val snapshot = configuration.snapshot
+        val displayed = runCatching {
+            android.provider.Settings.Global.getString(context.contentResolver, "flyme_ff_more_radial_packages")
+        }.getOrNull()
+        if (displayed != null) return displayed.split(',').filter { it.isNotEmpty() }.toSet()
+        return (snapshot.pinnedTargets + snapshot.innerPinnedTargets).mapNotNull { it.radialPackageName() }.toSet()
     }
 
     private fun reorderList(list: List<Any?>): List<Any?> {
@@ -951,11 +959,13 @@ internal class ColorOsAllAppsContent(
         const val COMMON_TITLE = "最近"
         const val COMMON_LIMIT = 12
         const val COMMON_MIN_APPS = 20
-        const val RECENT_WINDOW_MS = 3L * 24 * 60 * 60 * 1000
-        /** 入榜门槛：近 3 天打开 ≥2 次，或累计前台 ≥60 秒。 */
+        const val RECENT_WINDOW_MS = 7L * 24 * 60 * 60 * 1000
+        /** 入榜门槛：近 7 天打开 ≥2 次，或累计前台 ≥60 秒。 */
         const val RECENT_MIN_LAUNCHES = 2
         const val RECENT_MIN_FOREGROUND_MS = 60_000L
-        const val RECENT_CACHE_MS = 60_000L
+        const val RECENT_CACHE_MS = 30 * 60_000L
+        /** 模块自身：有桌面图标，但不该出现在「最近」里。 */
+        const val MODULE_PACKAGE = "com.eta.flymefreeform"
 
         /** 最近名单缓存：主线程只读它，过期再交给后台刷。 */
         /** 我们自己的 SearchHelper 实例（弱引用）。官方「全部」页的实例不在里面。 */

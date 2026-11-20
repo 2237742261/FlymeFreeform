@@ -161,6 +161,7 @@ internal class SystemUiCornerInputMonitor(
 
     private fun canClaim(side: CornerSide): Boolean =
         settings.enabled &&
+            android.provider.Settings.Global.getInt(context.contentResolver, "flyme_ff_catalog_ready", 0) == 1 &&
             when (side) {
                 CornerSide.Left -> settings.leftCornerEnabled
                 CornerSide.Right -> settings.rightCornerEnabled

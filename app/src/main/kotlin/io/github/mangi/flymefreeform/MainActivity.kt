@@ -39,16 +39,19 @@ class MainActivity : ComponentActivity() {
                     onCornerSidesChange = repository::setCornerSides,
                     onCornerTriggerRangeChange = repository::setCornerTriggerRangeDp,
                     onPanelScaleChange = { percent ->
-                        sendBroadcast(
+                        sendOrderedBroadcast(
                             android.content.Intent("com.eta.flymefreeform.action.PANEL_SCALE")
                                 .setPackage("android")
                                 .putExtra("panel_scale", percent),
+                            null,
                         )
                     },
                     onOutsideTapCloseModeChange = repository::setOutsideTapCloseMode,
                     onHandleSwipeUpToMiniEnabledChange =
                         repository::setHandleSwipeUpToMiniEnabled,
                     onKeepAwakeEnabledChange = repository::setKeepAwakeEnabled,
+                    onLongPressMuteEnabledChange = repository::setLongPressMuteEnabled,
+                    onFloatKeepAliveEnabledChange = repository::setFloatKeepAliveEnabled,
                     onRadialVibrateEnabledChange = repository::setRadialVibrateEnabled,
                     onRadialVibrateStrengthChange = repository::setRadialVibrateStrength,
                     onPauseInLandscapeChange = repository::setPauseInLandscape,

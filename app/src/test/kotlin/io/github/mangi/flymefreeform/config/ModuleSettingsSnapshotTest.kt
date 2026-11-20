@@ -75,6 +75,38 @@ class ModuleSettingsSnapshotTest {
     }
 
     @Test
+    fun floatAndMiniMuteSettingsRoundTripIndependently() {
+        val preferences = InMemoryPreferences()
+        ModuleSettingsSnapshot(
+            enabled = true,
+            longPressMuteEnabled = true,
+            floatKeepAlive = false,
+        ).writeTo(preferences.edit()).commit()
+
+        val restored = ModuleSettingsSnapshot.readFrom(preferences)
+        assertTrue(restored.longPressMuteEnabled)
+        assertFalse(restored.floatKeepAlive)
+        assertTrue(restored.longPressMuteEffective)
+        assertFalse(restored.floatKeepAliveEffective)
+
+        restored.copy(floatKeepAlive = true).writeTo(preferences.edit()).commit()
+        val bothEnabled = ModuleSettingsSnapshot.readFrom(preferences)
+        assertTrue(bothEnabled.longPressMuteEnabled)
+        assertTrue(bothEnabled.floatKeepAlive)
+    }
+
+    @Test
+    fun disabledModuleMakesNewFeaturesIneffective() {
+        val settings = ModuleSettingsSnapshot(
+            enabled = false,
+            longPressMuteEnabled = true,
+            floatKeepAlive = true,
+        )
+        assertFalse(settings.longPressMuteEffective)
+        assertFalse(settings.floatKeepAliveEffective)
+    }
+
+    @Test
     fun interactionSettingsRoundTrip() {
         val preferences = InMemoryPreferences()
         ModuleSettingsSnapshot(

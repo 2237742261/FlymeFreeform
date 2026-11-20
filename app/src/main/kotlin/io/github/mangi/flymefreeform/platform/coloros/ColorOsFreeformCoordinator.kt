@@ -17,6 +17,7 @@ import android.view.ViewConfiguration
 import android.view.WindowManager
 import io.github.mangi.flymefreeform.config.ModulePreferences
 import io.github.mangi.flymefreeform.config.ModuleSettingsSnapshot
+import io.github.mangi.flymefreeform.config.OutsideTapCloseMode
 import io.github.mangi.flymefreeform.config.PinnedTarget
 import io.github.mangi.flymefreeform.config.PinnedTargetCodec
 import io.github.mangi.flymefreeform.gesture.AdaptiveCornerGestureConfig
@@ -59,16 +60,21 @@ internal class ColorOsFreeformCoordinator(
     private val launcher = ColorOsFreeformLauncher(context)
     private val sidebar = ColorOsSidebarClient(context, handler, logger)
     private val keepAwakeDimWatcher = KeepAwakeDimWatcher(context, configuration, logger)
-    private val appCatalog =
+    private val windowGestures =
+        ColorOsWindowGestures(context, controller, configuration, handler, logger)
+    private val appCatalog: ColorOsAppCatalog =
         ColorOsAppCatalog(context, catalogExecutor, logger) { snapshot ->
             handler.post {
                 // 后台任务完成时配置可能已再次变化，旧结果不得覆盖新外观。
-                if (snapshot.matches(lastSettings)) {
+                if (isCurrentCatalog(snapshot) && snapshot.matches(lastSettings)) {
                     catalogSnapshot = snapshot
+                    publishCatalogReady(snapshot.isReadyFor(lastSettings))
                     overlay?.updateRadialAppearance(snapshot)
                 }
             }
         }
+    private fun isCurrentCatalog(snapshot: AppCatalogSnapshot): Boolean = appCatalog.isCurrent(snapshot)
+
     private val entryCatalog = ColorOsEntryCatalogBroker(context, handler, logger) { entries ->
         appCatalog.updateSidebarEntries(entries, lastSettings)
     }
@@ -86,9 +92,12 @@ internal class ColorOsFreeformCoordinator(
     private val pinnedTargetsReceiver =
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                if (intent?.action != ModulePreferences.ACTION_PINNED_TARGETS_CHANGED ||
-                    sentFromUid != moduleUid()
-                ) return
+                if (intent?.action != ModulePreferences.ACTION_PINNED_TARGETS_CHANGED) return
+                // 普通广播里 sentFromUid 可能是 -1（只有有序广播才保证有值），
+                // 之前直接比对 uid 会把 App 发来的更新整个丢掉；未知时放行。
+                val fromUid = sentFromUid
+                if (fromUid >= 0 && fromUid != moduleUid()) return
+                logger(Log.INFO, "PINNED_TARGETS_RX from=$fromUid", null)
                 val encoded = intent.getStringExtra(ModulePreferences.EXTRA_PINNED_TARGETS) ?: return
                 val targets =
                     PinnedTargetCodec.decodeList(encoded, ModulePreferences.MAX_OUTER_PINNED_APPS)
@@ -99,6 +108,9 @@ internal class ColorOsFreeformCoordinator(
                     )
                 configuration.override(
                     configuration.snapshot.copy(
+                        outsideTapCloseMode = if (fromUid >= 0) OutsideTapCloseMode.fromStoredValue(
+                            intent.getIntExtra(ModulePreferences.EXTRA_OUTSIDE_TAP_CLOSE_MODE, configuration.snapshot.outsideTapCloseMode.storedValue),
+                        ) else configuration.snapshot.outsideTapCloseMode,
                         enabled = intent.getBooleanExtra(
                             ModulePreferences.EXTRA_MODULE_ENABLED,
                             configuration.snapshot.enabled,
@@ -131,6 +143,16 @@ internal class ColorOsFreeformCoordinator(
                                 ModulePreferences.EXTRA_KEEP_AWAKE_ENABLED,
                                 configuration.snapshot.keepAwakeEnabled,
                             ),
+                        longPressMuteEnabled =
+                            intent.getBooleanExtra(
+                                ModulePreferences.EXTRA_LONG_PRESS_MUTE_ENABLED,
+                                configuration.snapshot.longPressMuteEnabled,
+                            ),
+                        floatKeepAlive =
+                            intent.getBooleanExtra(
+                                ModulePreferences.EXTRA_FLOAT_KEEP_ALIVE_ENABLED,
+                                configuration.snapshot.floatKeepAlive,
+                            ),
                     ),
                 )
             }
@@ -152,6 +174,10 @@ internal class ColorOsFreeformCoordinator(
     private val pointerStreamGate = PointerStreamGate()
     private var pendingMove: QueuedPointerEvent? = null
     private var movePosted = false
+    private val windowGestureQueueLock = Any()
+    @Volatile private var windowGestureStreamActive = false
+    private var pendingWindowGestureMove: MotionEvent? = null
+    private var windowGestureMovePosted = false
     private var lastOverlayFailureLogAt = -OVERLAY_FAILURE_LOG_INTERVAL_MS
 
     fun start() {
@@ -217,8 +243,7 @@ internal class ColorOsFreeformCoordinator(
             }
         }
 
-    private fun registerPinnedTargetsObserver() {
-        try {
+    private fun registerPinnedTargetsObserver() {        try {
             context.registerReceiver(
                 pinnedTargetsReceiver,
                 IntentFilter(ModulePreferences.ACTION_PINNED_TARGETS_CHANGED),
@@ -245,18 +270,22 @@ internal class ColorOsFreeformCoordinator(
                 settings.innerPinsSaved != lastSettings.innerPinsSaved ||
                 settings.innerPinnedTargets != lastSettings.innerPinnedTargets
         lastSettings = settings
-        if (environmentState.isGestureAllowed(refreshKeyguard = true) && (settings.leftCornerEnabled || settings.rightCornerEnabled)) {
+        publishCatalogReady(catalogSnapshot.isReadyFor(settings))
+        if (!settings.longPressMuteEffective) windowGestures.releaseAll()
+        if (settings.enabled && environmentState.isGestureAllowed(refreshKeyguard = true) &&
+            (settings.leftCornerEnabled || settings.rightCornerEnabled)
+        ) {
             val resuming = !pointerRegistered
             if ((resuming || selectionChanged) && settings.hasSidebarPins) entryCatalog.refresh()
             registerPointerListener()
-            if (resuming || selectionChanged || !catalogSnapshot.matches(settings) || catalogSnapshot.radialApps.isEmpty()) {
-                appCatalog.refresh(settings, reloadApps = resuming || selectionChanged || catalogSnapshot.radialApps.isEmpty())
+            if (resuming || selectionChanged || !catalogSnapshot.appsLoaded) {
+                appCatalog.refresh(settings, reloadApps = resuming || selectionChanged)
             }
         } else {
             sidebar.cancel()
             entryLaunchGeneration++
             entryCatalog.cancel()
-            unregisterPointerListener()
+            if (settings.longPressMuteEffective) registerPointerListener() else unregisterPointerListener()
             activeEnvironmentApproved = false
             activeGestureConfig = null
             gestureEngine.cancel()
@@ -281,7 +310,10 @@ internal class ColorOsFreeformCoordinator(
                     when (method.name) {
                         "onPointerEvent" -> {
                             val event = args?.firstOrNull() as? MotionEvent
-                            if (event != null) enqueuePointerEvent(event, generation)
+                            if (event != null) {
+                                if (pointerRegistered && generation == pointerGeneration) enqueueWindowGestureEvent(event)
+                                enqueuePointerEvent(event, generation)
+                            }
                             null
                         }
                         "hashCode" -> System.identityHashCode(proxy)
@@ -300,6 +332,73 @@ internal class ColorOsFreeformCoordinator(
             logger(Log.WARN, "SYSTEM_POINTER_LISTENER_UNAVAILABLE", exception)
         } catch (exception: RuntimeException) {
             logger(Log.WARN, "SYSTEM_POINTER_LISTENER_FAILED", exception)
+        }
+    }
+
+    /** Keep mini-window long-press recognition independent of the corner-only stream gate. */
+    private fun enqueueWindowGestureEvent(event: MotionEvent) {
+        val action = event.actionMasked
+        when (action) {
+            MotionEvent.ACTION_DOWN -> {
+                windowGestureStreamActive = configuration.snapshot.longPressMuteEffective
+                clearPendingWindowGestureMove()
+                if (!windowGestureStreamActive) return
+            }
+            MotionEvent.ACTION_MOVE -> if (!windowGestureStreamActive) return
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN -> {
+                if (!windowGestureStreamActive) return
+                windowGestureStreamActive = false
+            }
+            else -> return
+        }
+        val copy = MotionEvent.obtain(event)
+        if (action != MotionEvent.ACTION_MOVE) {
+            val precedingMove = synchronized(windowGestureQueueLock) {
+                pendingWindowGestureMove.also {
+                    pendingWindowGestureMove = null
+                    windowGestureMovePosted = false
+                }
+            }
+            handler.post {
+                try {
+                    precedingMove?.let(windowGestures::onEvent)
+                    windowGestures.onEvent(copy)
+                } finally {
+                    precedingMove?.recycle()
+                    copy.recycle()
+                }
+            }
+            return
+        }
+        var shouldPost = false
+        synchronized(windowGestureQueueLock) {
+            pendingWindowGestureMove?.recycle()
+            pendingWindowGestureMove = copy
+            if (!windowGestureMovePosted) {
+                windowGestureMovePosted = true
+                shouldPost = true
+            }
+        }
+        if (shouldPost) handler.post(::drainWindowGestureMove)
+    }
+
+    private fun drainWindowGestureMove() {
+        val event = synchronized(windowGestureQueueLock) {
+            windowGestureMovePosted = false
+            pendingWindowGestureMove.also { pendingWindowGestureMove = null }
+        } ?: return
+        try {
+            if (windowGestureStreamActive || windowGestures.isTracking) windowGestures.onEvent(event)
+        } finally {
+            event.recycle()
+        }
+    }
+
+    private fun clearPendingWindowGestureMove() {
+        synchronized(windowGestureQueueLock) {
+            pendingWindowGestureMove?.recycle()
+            pendingWindowGestureMove = null
+            windowGestureMovePosted = false
         }
     }
 
@@ -349,7 +448,9 @@ internal class ColorOsFreeformCoordinator(
         val event = queued.event
         try {
             if (queued.generation != pointerGeneration || !pointerRegistered) return
-            if (event.actionMasked != MotionEvent.ACTION_DOWN && !pointerStreamGate.shouldForward(queued.stream)) return
+            if (event.actionMasked != MotionEvent.ACTION_DOWN &&
+                !pointerStreamGate.shouldForward(queued.stream)
+            ) return
             if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                 entryLaunchGeneration++
                 entryCatalog.cancelLaunch()
@@ -478,11 +579,31 @@ internal class ColorOsFreeformCoordinator(
         }
     }
 
+    private var publishedCatalogReady: Boolean? = null
+
+    private fun publishCatalogReady(ready: Boolean) {
+        if (publishedCatalogReady == ready) return
+        try {
+            android.provider.Settings.Global.putInt(context.contentResolver, "flyme_ff_catalog_ready", if (ready) 1 else 0)
+            publishedCatalogReady = ready
+            logger(Log.INFO, "RADIAL_CATALOG_READY value=$ready", null)
+        } catch (exception: RuntimeException) {
+            logger(Log.WARN, "RADIAL_CATALOG_READY_WRITE_FAILED", exception)
+        }
+    }
+
     private fun showOverlay(
         side: io.github.mangi.flymefreeform.gesture.CornerSide,
         x: Float,
         y: Float,
     ) {
+        // 呼出前重读一次配置：广播正常时是保险，广播失效的机型就靠这一次兜底。
+        configuration.reload()
+        applySettings(configuration.snapshot)
+        if (!catalogSnapshot.isReadyFor(lastSettings)) {
+            gestureEngine.cancel()
+            return
+        }
         entryLaunchGeneration++
         entryCatalog.cancelLaunch()
         removeOverlay()
@@ -588,6 +709,11 @@ internal class ColorOsFreeformCoordinator(
         if (overlay == null) return
         // 记下这次是从哪个角落呼出的：面板缩放后要靠向同一边。
         try {
+            val displayed = (catalogSnapshot.radialApps + catalogSnapshot.innerApps)
+                .mapNotNull { it.target.radialPackageName() }.distinct()
+            android.provider.Settings.Global.putString(
+                context.contentResolver, "flyme_ff_more_radial_packages", displayed.joinToString(","),
+            )
             android.provider.Settings.Global.putInt(
                 context.contentResolver,
                 "flyme_ff_more_panel_left",

@@ -45,9 +45,10 @@ internal class ColorOsSidebarEntryEndpoint(
     }
     private val settingsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != ModulePreferences.ACTION_PINNED_TARGETS_CHANGED ||
-                sentFromUid != moduleUid()
-            ) return
+            if (intent?.action != ModulePreferences.ACTION_PINNED_TARGETS_CHANGED) return
+            // 与 system_server 侧一致：普通广播的 sentFromUid 可能为 -1，未知时放行。
+            val fromUid = sentFromUid
+            if (fromUid >= 0 && fromUid != moduleUid()) return
             val encoded = intent.getStringExtra(ModulePreferences.EXTRA_PINNED_TARGETS) ?: return
             val innerTargets =
                 PinnedTargetCodec.decodeList(

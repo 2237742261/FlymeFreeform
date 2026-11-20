@@ -219,7 +219,7 @@ internal class ColorOsAllAppsEndpoint(
         watchingPackages = true
         service.registerComponentCallbacks(components)
         watchingConfiguration = true
-        next.content = ColorOsAllAppsContent(loader, target, module)
+        next.content = ColorOsAllAppsContent(loader, target, configuration, module)
         advance()
     }
 

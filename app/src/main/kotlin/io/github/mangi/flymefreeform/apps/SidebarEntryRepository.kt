@@ -38,7 +38,7 @@ internal class SidebarEntryRepository(private val context: Context) {
         mutableState.value = mutableState.value.copy(status = SidebarCatalogStatus.Loading)
         handler.postDelayed(timeout, SidebarEntryProtocol.TIMEOUT_MS)
         try {
-            context.sendBroadcast(Intent(SidebarEntryProtocol.CATALOG_ACTION).setPackage("android").apply {
+            context.sendOrderedBroadcast(Intent(SidebarEntryProtocol.CATALOG_ACTION).setPackage("android").apply {
                 putExtra(SidebarEntryProtocol.ID, request)
                 putExtra(SidebarEntryProtocol.DEADLINE, SystemClock.uptimeMillis() + SidebarEntryProtocol.TIMEOUT_MS)
                 putExtra(SidebarEntryProtocol.REPLY, reply)

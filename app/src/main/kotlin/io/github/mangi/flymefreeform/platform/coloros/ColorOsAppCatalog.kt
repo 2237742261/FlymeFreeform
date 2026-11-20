@@ -35,7 +35,13 @@ internal data class AppCatalogSnapshot(
     val innerApps: List<RadialEntry> = emptyList(),
     val panelApps: List<RadialEntry> = emptyList(),
     val settings: ModuleSettingsSnapshot = ModuleSettingsSnapshot(),
+    val appsLoaded: Boolean = false,
+    val sidebarLoaded: Boolean = false,
+    val generation: Long = 0,
 ) {
+    fun isReadyFor(settings: ModuleSettingsSnapshot): Boolean =
+        appsLoaded && (!settings.hasSidebarPins || sidebarLoaded) && matches(settings)
+
     fun matches(settings: ModuleSettingsSnapshot): Boolean =
         this.settings.pinsSaved == settings.pinsSaved &&
             this.settings.pinnedTargets == settings.pinnedTargets &&
@@ -53,19 +59,26 @@ internal class ColorOsAppCatalog(
     private val iconRenderer = ColorOsRadialIconRenderer(context.resources, logger)
 
     private val contentRevision = AtomicLong()
+    private val requestGeneration = AtomicLong()
+
+    fun isCurrent(snapshot: AppCatalogSnapshot): Boolean = snapshot.generation == requestGeneration.get()
     private var cachedContent: CatalogContent? = null // 仅目录工作线程访问。
 
     @Volatile private var sidebarEntries: List<SelectableEntry> = emptyList()
+    @Volatile private var sidebarLoaded = false
 
     fun updateSidebarEntries(entries: List<SelectableEntry>, settings: ModuleSettingsSnapshot) {
         sidebarEntries = entries.toList()
+        sidebarLoaded = true
         refresh(settings)
     }
 
     fun refresh(settings: ModuleSettingsSnapshot, reloadApps: Boolean = true) {
         if (reloadApps) contentRevision.incrementAndGet()
+        val revision = contentRevision.get()
+        val generation = requestGeneration.incrementAndGet()
         executor.execute {
-            val revision = contentRevision.get()
+            if (generation != requestGeneration.get()) return@execute
             val cached = cachedContent
             val content =
                 if (cached != null && cached.revision == revision &&
@@ -99,13 +112,16 @@ internal class ColorOsAppCatalog(
                 entry.icon.prepareToDraw()
                 entry.badge?.prepareToDraw()
             }
-            if (revision == contentRevision.get()) {
+            if (generation == requestGeneration.get()) {
                 publish(
                     AppCatalogSnapshot(
                         radialApps = shapedOuter,
                         innerApps = shapedInner,
                         panelApps = content.panelApps,
                         settings = settings,
+                        appsLoaded = true,
+                        sidebarLoaded = content.sidebarLoaded,
+                        generation = generation,
                     ),
                 )
             }
@@ -123,6 +139,7 @@ internal class ColorOsAppCatalog(
                 .mapNotNull(::toEntry)
                 .distinctBy(RadialEntry::target)
                 .toList()
+        val loadedSidebar = sidebarLoaded
         val sidebar = sidebarEntries
         val nativeEntries = sidebar.map {
             RadialEntry(it.target, it.label, it.icon, it.badge, it.badge?.leftOffsetFraction() ?: 0f)
@@ -178,7 +195,7 @@ internal class ColorOsAppCatalog(
             }
         }.toMap()
         panel.forEach { it.icon.prepareToDraw() }
-        return CatalogContent(revision, settings, outerApps, innerApps, panel, sources)
+        return CatalogContent(revision, settings, outerApps, innerApps, panel, sources, loadedSidebar)
     }
 
     private data class CatalogContent(
@@ -188,6 +205,7 @@ internal class ColorOsAppCatalog(
         val innerApps: List<RadialEntry>,
         val panelApps: List<RadialEntry>,
         val radialSources: Map<PinnedTarget, Drawable>,
+        val sidebarLoaded: Boolean,
     )
 
     /** 在目录工作线程测量可见范围；左侧只平移角标，避免翻转其中的数字。 */
@@ -251,8 +269,6 @@ internal class ColorOsAppCatalog(
     }
 
     private companion object {
-        const val OUTER_RING_MAX_APPS = 6
-        const val INNER_RING_MAX_APPS = 5
         const val RECENT_LIMIT = 48
         const val MODULE_PACKAGE = "com.eta.flymefreeform"
     }

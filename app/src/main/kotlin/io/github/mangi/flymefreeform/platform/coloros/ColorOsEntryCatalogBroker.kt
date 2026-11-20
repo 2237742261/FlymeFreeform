@@ -32,13 +32,17 @@ internal class ColorOsEntryCatalogBroker(
     private val callbacks = mutableListOf<(List<SelectableEntry>?) -> Unit>()
     private var retries = 0
     private var refreshing = false
+    private var refreshAgain = false
     private var launching = false
     private var registered = false
     private var lastRequestAt = -1_000L
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != SidebarEntryProtocol.CATALOG_ACTION || sentFromPackage != SidebarEntryProtocol.MODULE_PACKAGE || sentFromUid < 0) return
+            if (intent?.action != SidebarEntryProtocol.CATALOG_ACTION) return
+            // 普通广播的 sentFromUid 可能为 -1（只有有序广播才保证有值）；未知时只靠
+            // 签名权限(系统已过滤)与包名校验，不再因为 uid 读不到就直接丢弃请求。
             val sender = sentFromUid
+            if (sender >= 0 && sentFromPackage != SidebarEntryProtocol.MODULE_PACKAGE) return
             try {
                 val id = intent.getStringExtra(SidebarEntryProtocol.ID) ?: return
                 val deadline = intent.getLongExtra(SidebarEntryProtocol.DEADLINE, 0)
@@ -51,13 +55,19 @@ internal class ColorOsEntryCatalogBroker(
                 worker.execute {
                     try {
                         val user = ActivityManager::class.java.getMethod("getCurrentUser").invoke(null) as Int
-                        // 系统按签名权限过滤广播后，仍核对实际 UID 与当前用户，拒绝同证书其他包。
+                        // 发送者 uid 读不到（-1）时退回用模块包名解析；签名权限已保证只有同证书能发。
+                        val originUid =
+                            if (sender >= 0) sender
+                            else this@ColorOsEntryCatalogBroker.context.packageManager.getApplicationInfo(
+                                SidebarEntryProtocol.MODULE_PACKAGE,
+                                PackageManager.ApplicationInfoFlags.of(0),
+                            ).uid
                         val userContext = Context::class.java.getMethod("createContextAsUser", android.os.UserHandle::class.java, Int::class.javaPrimitiveType)
-                            .invoke(this@ColorOsEntryCatalogBroker.context, android.os.UserHandle.getUserHandleForUid(sender), 0) as Context
+                            .invoke(this@ColorOsEntryCatalogBroker.context, android.os.UserHandle.getUserHandleForUid(originUid), 0) as Context
                         val expected = userContext.packageManager.getApplicationInfo(
                             SidebarEntryProtocol.MODULE_PACKAGE, PackageManager.ApplicationInfoFlags.of(0),
                         ).uid
-                        if (sender != expected || sender / 100_000 != user || SystemClock.uptimeMillis() >= deadline) return@execute
+                        if ((sender >= 0 && sender != expected) || originUid / 100_000 != user || SystemClock.uptimeMillis() >= deadline) return@execute
                         handler.post {
                             refresh { entries ->
                                 sendCatalog(reply, id, deadline, entries)
@@ -95,7 +105,10 @@ internal class ColorOsEntryCatalogBroker(
             if (callbacks.size >= 2) { onComplete(null); return }
             callbacks += onComplete
         }
-        if (refreshing) return
+        if (refreshing) {
+            refreshAgain = true
+            return
+        }
         refreshing = true
         if (!connection.request { entries, _ -> publish(entries) }) publish(null)
     }
@@ -113,17 +126,20 @@ internal class ColorOsEntryCatalogBroker(
 
     fun cancel() = connection.cancel()
 
+    /** Refresh after the current read while keeping the last known-good entries visible. */
     fun invalidate() {
-        connection.cancel()
-        onCatalog(emptyList())
+        retries = 0
+        if (refreshing) refreshAgain = true
     }
 
     private fun publish(entries: List<SelectableEntry>?) {
         refreshing = false
+        val repeat = refreshAgain
+        refreshAgain = false
         if (entries != null) {
             retries = 0
             onCatalog(entries)
-        } else if (retries < REFRESH_RETRIES) {
+        } else if (!repeat && retries < REFRESH_RETRIES) {
             retries++
             log(Log.DEBUG, "ENTRY_CATALOG_RETRY attempt=$retries", null)
             handler.postDelayed({ refresh() }, REFRESH_RETRY_DELAY_MS)
@@ -131,6 +147,7 @@ internal class ColorOsEntryCatalogBroker(
         val pending = callbacks.toList()
         callbacks.clear()
         pending.forEach { it(entries) }
+        if (repeat) handler.post { refresh() }
     }
 
     private fun sendCatalog(reply: Messenger, id: String, deadline: Long, entries: List<SelectableEntry>?) {

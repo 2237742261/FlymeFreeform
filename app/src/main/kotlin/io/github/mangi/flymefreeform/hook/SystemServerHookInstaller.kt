@@ -17,14 +17,18 @@ internal class SystemServerHookInstaller(
     }
 
     fun install(classLoader: ClassLoader) {
+        io.github.mangi.flymefreeform.log.ModuleLog.attach { priority, code, throwable ->
+            module.log(priority, TAG, code, throwable)
+        }
         OutsideTapCloseHookInstaller(module, configuration, environment).install(classLoader)
+        WindowMuteHook(module).install(classLoader)
+        WindowMuteExitHook(module).install(classLoader)
+        runCatching { FloatKeepAliveHook(module, configuration).install(classLoader) }
+            .onFailure { module.log(Log.WARN, TAG, "FLOAT_KEEP_ALIVE_INSTALL_FAILED", it) }
         HandleSwipeUpHookInstaller(module, configuration, environment).install(classLoader)
         // 双击小横条关窗：挂 dispatchTouchEvent 自己数双击，原厂逻辑照跑，
         // 不碰 ColorOS 那个双击监听器（Broum）依赖的状态。
         DoubleTapCaptionCloseHookInstaller(module, configuration, environment).install(classLoader)
-        // 小窗双击关窗暂停：中窗双击白条会稳定触发 ColorOS 自己的
-        // NPE（android.telephony.Broum.onDoubleTap 拆空 Boolean）→ system_server 重启。
-        // 先把它拿掉，用来确认崩溃是否跟这条 hook 有关。
         try {
             // 厂商初始化入口只能反射定位；缺失时保留系统启动流程。
             @SuppressLint("PrivateApi")

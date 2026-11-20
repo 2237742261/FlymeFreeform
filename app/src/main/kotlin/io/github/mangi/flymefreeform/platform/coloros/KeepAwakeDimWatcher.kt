@@ -20,7 +20,7 @@ import java.lang.reflect.Method
  * 跑在 system_server 主线程，会把桌面转场动画卡掉帧。
  *
  * 这里直接读系统内存里的显示策略：PowerManagerService → mPowerGroups →
- * PowerGroup.getPolicyLocked()（DisplayPowerRequest.policy）。一次调用几微秒，
+ * PowerGroup.getPolicyLocked()（DisplayPowerRequest.policy）。实际耗时需设备测量，
  * 不起进程、不读文件、不跨 binder。
  *
  * 检测到「压暗 → 又被点亮」时发一条广播给 SystemUI，由它弹常亮气泡。
@@ -34,6 +34,13 @@ internal class KeepAwakeDimWatcher(
     private val handler = Handler(thread.looper)
 
     private var running = false
+    private var screenInteractive = false
+
+    private fun reschedule() {
+        handler.removeCallbacks(tick)
+        dimmed = false
+        if (screenInteractive && configuration.snapshot.enabled && configuration.snapshot.keepAwakeEnabled) handler.post(tick)
+    }
     private var dimmed = false
     private var dimSince = 0L
     private var powerService: Any? = null
@@ -48,7 +55,7 @@ internal class KeepAwakeDimWatcher(
             override fun run() {
                 if (!running) return
                 try {
-                    if (configuration.snapshot.keepAwakeEnabled) {
+                    if (screenInteractive && configuration.snapshot.enabled && configuration.snapshot.keepAwakeEnabled) {
                         poll()
                     } else if (dimmed) {
                         dimmed = false
@@ -58,14 +65,33 @@ internal class KeepAwakeDimWatcher(
                 } catch (exception: ReflectiveOperationException) {
                     logThrottled("KEEP_AWAKE_DIM_POLL_REFLECT_FAILED", exception)
                 }
-                handler.postDelayed(this, pollIntervalMs())
+                if (screenInteractive && configuration.snapshot.enabled && configuration.snapshot.keepAwakeEnabled) {
+                    handler.postDelayed(this, pollIntervalMs())
+                }
             }
         }
 
     fun start() {
         if (running) return
         running = true
-        handler.post(tick)
+        screenInteractive = context.getSystemService(android.os.PowerManager::class.java)?.isInteractive == true
+        context.registerReceiver(
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    when (intent?.action) {
+                        Intent.ACTION_SCREEN_ON -> screenInteractive = true
+                        Intent.ACTION_SCREEN_OFF -> screenInteractive = false
+                        else -> return
+                    }
+                    reschedule()
+                }
+            },
+            android.content.IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
+            }, null, handler, Context.RECEIVER_NOT_EXPORTED,
+        )
+        configuration.observe { handler.post { reschedule() } }
         logger(Log.INFO, "KEEP_AWAKE_DIM_WATCHER_START", null)
     }
 

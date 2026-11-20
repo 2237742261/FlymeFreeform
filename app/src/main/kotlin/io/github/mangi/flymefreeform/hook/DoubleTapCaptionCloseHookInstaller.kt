@@ -1,6 +1,8 @@
 package io.github.mangi.flymefreeform.hook
 
 import android.annotation.SuppressLint
+import android.graphics.Rect
+import android.view.InputDevice
 import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
@@ -9,7 +11,10 @@ import io.github.libxposed.api.XposedModule
 import io.github.mangi.flymefreeform.config.OutsideTapCloseMode
 import java.lang.reflect.Field
 import java.lang.reflect.Method
-import kotlin.math.abs
+import io.github.mangi.flymefreeform.gesture.OutsideTapGestureEngine
+import io.github.mangi.flymefreeform.gesture.CaptionHandleRegion
+import java.util.WeakHashMap
+import io.github.mangi.flymefreeform.platform.coloros.ColorOsTaskImeBoundsAccess
 
 /**
  * 双击小窗底部横条关闭小窗。
@@ -28,10 +33,8 @@ internal class DoubleTapCaptionCloseHookInstaller(
     private val configuration: ProcessConfiguration,
     private val environment: ModuleEnvironmentState,
 ) {
-    private var lastTapAt = 0L
-    private var downAt = 0L
-    private var downX = 0f
-    private var downY = 0f
+    private val taps = WeakHashMap<Any, OutsideTapGestureEngine>()
+    private var lastImeProbeAt = -FAILURE_LOG_INTERVAL_MS
     private var lastFailureLogAt = -FAILURE_LOG_INTERVAL_MS
 
     fun install(classLoader: ClassLoader) {
@@ -51,6 +54,13 @@ internal class DoubleTapCaptionCloseHookInstaller(
                     name = "isTaskInFlexibleState",
                     parameterTypes = arrayOf(taskClass, Int::class.javaPrimitiveType!!),
                 )
+            val visibleBounds = controllerClass.requiredMethod("getFlexibleTaskVisibleBounds", arrayOf(taskClass))
+            val imeBoundsAccess = try {
+                ColorOsTaskImeBoundsAccess(taskClass, classLoader.loadClass(TASK_EXT_CLASS), Rect::class.java)
+            } catch (exception: ReflectiveOperationException) {
+                module.log(Log.WARN, TAG, "CAPTION_IME_BOUNDS_UNAVAILABLE", exception)
+                null
+            }
             val exitFlexibleTask =
                 controllerClass.requiredMethod(
                     name = "exitFlexibleTask",
@@ -71,23 +81,43 @@ internal class DoubleTapCaptionCloseHookInstaller(
                     val event = chain.getArg(0) as? MotionEvent
                     // 原厂逻辑必须照跑：它在初始化 ColorOS 那个双击监听器依赖的状态。
                     val result = chain.proceed()
-                    if (event != null) {
-                        val settings = configuration.snapshot
-                        if (environment.isModuleAllowed() &&
-                            settings.outsideTapCloseMode == OutsideTapCloseMode.CaptionDoubleTap
-                        ) {
-                            observeTap(
-                                captionTaskField,
-                                captionControllerField,
-                                isTaskInFlexibleState,
-                                exitFlexibleTask,
-                                chain.thisObject,
-                                event,
-                            )
+                    val caption = chain.thisObject
+                    if (event != null && caption != null) {
+                        if (!environment.isModuleAllowed() || configuration.snapshot.outsideTapCloseMode != OutsideTapCloseMode.CaptionDoubleTap) return@intercept result
+                        try {
+                            val task = captionTaskField.get(caption)
+                            val controller = captionControllerField.get(caption)
+                            val onHandle = task != null && controller != null &&
+                                isTaskInFlexibleState.invoke(controller, task, ORDINARY_FLEXIBLE_STATE) == true &&
+                                event.pointerCount == 1 &&
+                                event.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER &&
+                                event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN) &&
+                                event.actionMasked in CAPTION_ACTIONS &&
+                                hitsHandle(event, task, controller, visibleBounds, imeBoundsAccess)
+                            val close = synchronized(taps) {
+                                if (!onHandle) {
+                                    taps.remove(caption)?.interrupt()
+                                    false
+                                } else {
+                                    observeTap(taps.getOrPut(caption) {
+                                        OutsideTapGestureEngine().apply { updateMode(OutsideTapCloseMode.DoubleTap) }
+                                    }, task, event)
+                                }
+                            }
+                            if (close) closeCaptionTask(captionTaskField, captionControllerField,
+                                isTaskInFlexibleState, exitFlexibleTask, caption)
+                        } catch (exception: ReflectiveOperationException) {
+                            synchronized(taps) { taps.remove(caption) }
+                            logFailure("CAPTION_TOUCH_REFLECTION_FAILED", exception)
+                        } catch (exception: RuntimeException) {
+                            synchronized(taps) { taps.remove(caption) }
+                            logFailure("CAPTION_TOUCH_FAILED", exception)
                         }
                     }
                     result
                 }
+            configuration.observe { synchronized(taps) { taps.clear() } }
+            environment.observe { synchronized(taps) { taps.clear() } }
             module.log(Log.INFO, TAG, "CAPTION_TAP_HOOK_INSTALLED", null)
         } catch (exception: ReflectiveOperationException) {
             module.log(Log.WARN, TAG, "CAPTION_TAP_TARGET_UNAVAILABLE", exception)
@@ -96,43 +126,39 @@ internal class DoubleTapCaptionCloseHookInstaller(
         }
     }
 
-    private fun observeTap(
-        captionTaskField: Field,
-        captionControllerField: Field,
-        isTaskInFlexibleState: Method,
-        exitFlexibleTask: Method,
-        caption: Any?,
-        event: MotionEvent,
-    ) {
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                downAt = SystemClock.uptimeMillis()
-                downX = event.x
-                downY = event.y
-            }
-            MotionEvent.ACTION_UP -> {
-                val now = SystemClock.uptimeMillis()
-                // 得先是个「点击」：按下没滑动太久、没飘太远。
-                if (now - downAt > TAP_MAX_MS) return
-                if (abs(event.x - downX) > touchSlop || abs(event.y - downY) > touchSlop) return
-                if (lastTapAt != 0L && now - lastTapAt <= DOUBLE_TAP_MS) {
-                    lastTapAt = 0L
-                    closeCaptionTask(
-                        captionTaskField,
-                        captionControllerField,
-                        isTaskInFlexibleState,
-                        exitFlexibleTask,
-                        caption,
-                    )
-                } else {
-                    lastTapAt = now
-                }
-            }
-            MotionEvent.ACTION_CANCEL -> {
-                downAt = 0L
-                lastTapAt = 0L
+    private fun hitsHandle(
+        event: MotionEvent, task: Any, controller: Any, visibleBounds: Method, imeAccess: ColorOsTaskImeBoundsAccess?,
+    ): Boolean {
+        val adjusted = try {
+            (imeAccess?.get(task) as? Rect)?.let(::Rect)?.takeUnless { it.isEmpty }
+        } catch (exception: Exception) {
+            logFailure("CAPTION_IME_BOUNDS_READ_FAILED", exception)
+            null
+        }
+        val bounds = adjusted ?: (visibleBounds.invoke(controller, task) as? Rect) ?: return false
+        val hit = CaptionHandleRegion.contains(event.rawX, event.rawY, bounds.left, bounds.top,
+            bounds.right, bounds.bottom, density)
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            val now = SystemClock.uptimeMillis()
+            if (now - lastImeProbeAt >= 2_000L) {
+                lastImeProbeAt = now
+                module.log(Log.DEBUG, TAG, "CAPTION_HANDLE_HIT source=${if (adjusted != null) "ime" else "normal"} point=${event.rawX},${event.rawY} bounds=$bounds hit=$hit", null)
             }
         }
+        return hit
+    }
+
+    private fun observeTap(engine: OutsideTapGestureEngine, task: Any, event: MotionEvent): Boolean {
+        val id = event.getPointerId(0)
+        val x = event.rawX
+        val y = event.rawY
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> engine.begin(task, id, x, y, event.eventTime, captured = true)
+            MotionEvent.ACTION_MOVE -> engine.move(task, id, 1, x, y, TOUCH_SLOP_DP * density)
+            MotionEvent.ACTION_UP -> return engine.finish(task, id, x, y, event.eventTime,
+                TAP_MAX_MS, TOUCH_SLOP_DP * density, DOUBLE_TAP_MS, DOUBLE_TAP_SLOP_DP * density)
+        }
+        return false
     }
 
     private fun closeCaptionTask(
@@ -170,19 +196,22 @@ internal class DoubleTapCaptionCloseHookInstaller(
         module.log(Log.WARN, TAG, code, throwable)
     }
 
-    private val touchSlop: Float
-        get() = TOUCH_SLOP_DP * android.content.res.Resources.getSystem().displayMetrics.density
+    private val density: Float
+        get() = android.content.res.Resources.getSystem().displayMetrics.density
 
     private companion object {
         /** 原厂 FlexibleTask 状态：1 = 普通小窗（中窗）。 */
         const val ORDINARY_FLEXIBLE_STATE = 1
         const val TAP_MAX_MS = 300L
         const val DOUBLE_TAP_MS = 350L
-        const val TOUCH_SLOP_DP = 24f
+        const val TOUCH_SLOP_DP = 8f
+        const val DOUBLE_TAP_SLOP_DP = 24f
+        val CAPTION_ACTIONS = setOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP)
         const val TAG = "FlymeFreeform"
         const val CAPTION_VIEW_CLASS = "com.android.server.wm.FlexibleTaskCaptionView"
         const val FLEXIBLE_TASK_CONTROLLER_CLASS = "com.android.server.wm.FlexibleTaskController"
         const val TASK_CLASS = "com.android.server.wm.Task"
+        const val TASK_EXT_CLASS = "com.android.server.wm.TaskExtImpl"
         const val FAILURE_LOG_INTERVAL_MS = 10_000L
     }
 }

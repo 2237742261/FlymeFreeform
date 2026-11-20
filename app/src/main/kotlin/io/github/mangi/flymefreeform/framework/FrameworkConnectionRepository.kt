@@ -83,6 +83,12 @@ internal class FrameworkConnectionRepository(private val context: Context) {
     fun setKeepAwakeEnabled(enabled: Boolean) =
         updateSettings { it.copy(keepAwakeEnabled = enabled) }
 
+    fun setLongPressMuteEnabled(enabled: Boolean) =
+        updateSettings { it.copy(longPressMuteEnabled = enabled) }
+
+    fun setFloatKeepAliveEnabled(enabled: Boolean) =
+        updateSettings { it.copy(floatKeepAlive = enabled) }
+
     fun setHandleSwipeUpToMiniEnabled(enabled: Boolean) =
         updateSettings { it.copy(handleSwipeUpToMiniEnabled = enabled) }
 
@@ -153,12 +159,15 @@ internal class FrameworkConnectionRepository(private val context: Context) {
                 activeConnection = connection.copy(confirmedState = confirmed)
                 mutableState.value = confirmed
                 if (next.pinsSaved != previous.settings.pinsSaved ||
+                    next.outsideTapCloseMode != previous.settings.outsideTapCloseMode ||
                     next.pinnedTargets != previous.settings.pinnedTargets ||
                     next.innerPinsSaved != previous.settings.innerPinsSaved ||
                     next.innerPinnedTargets != previous.settings.innerPinnedTargets ||
                     next.radialVibrateEnabled != previous.settings.radialVibrateEnabled ||
                     next.radialVibrateStrength != previous.settings.radialVibrateStrength ||
-                    next.keepAwakeEnabled != previous.settings.keepAwakeEnabled
+                    next.keepAwakeEnabled != previous.settings.keepAwakeEnabled ||
+                    next.longPressMuteEnabled != previous.settings.longPressMuteEnabled ||
+                    next.floatKeepAlive != previous.settings.floatKeepAlive
                 ) {
                     notifyPinnedTargetsChanged(next)
                 }
@@ -184,6 +193,7 @@ internal class FrameworkConnectionRepository(private val context: Context) {
             )
             putExtra(ModulePreferences.EXTRA_INNER_PINS_SAVED, settings.innerPinsSaved)
             putExtra(ModulePreferences.EXTRA_MODULE_ENABLED, settings.enabled)
+            putExtra(ModulePreferences.EXTRA_OUTSIDE_TAP_CLOSE_MODE, settings.outsideTapCloseMode.storedValue)
             putExtra(
                 ModulePreferences.EXTRA_RADIAL_VIBRATE_ENABLED,
                 settings.radialVibrateEnabled,
@@ -193,11 +203,13 @@ internal class FrameworkConnectionRepository(private val context: Context) {
                 settings.radialVibrateStrength,
             )
             putExtra(ModulePreferences.EXTRA_KEEP_AWAKE_ENABLED, settings.keepAwakeEnabled)
+            putExtra(ModulePreferences.EXTRA_LONG_PRESS_MUTE_ENABLED, settings.longPressMuteEnabled)
+            putExtra(ModulePreferences.EXTRA_FLOAT_KEEP_ALIVE_ENABLED, settings.floatKeepAlive)
         }
         try {
-            context.sendBroadcast(intent.setPackage("android"))
-            context.sendBroadcast(intent.setPackage("com.coloros.smartsidebar"))
-            context.sendBroadcast(intent.setPackage("com.android.systemui"))
+            context.sendOrderedBroadcast(intent.setPackage("android"), null)
+            context.sendOrderedBroadcast(intent.setPackage("com.coloros.smartsidebar"), null)
+            context.sendOrderedBroadcast(intent.setPackage("com.android.systemui"), null)
         } catch (_: RuntimeException) {
             // Remote preference commit remains authoritative if a target process is unavailable.
         }

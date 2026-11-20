@@ -53,6 +53,10 @@
     <string name="radial_vibrate_strength_summary">拖动时按当前强度即时震动，松手后生效</string>
     <string name="keep_awake_title">临时屏幕常亮</string>
     <string name="keep_awake_summary">屏幕压暗后点亮，会弹出一个气泡；点一下就保持常亮，息屏或再点一次取消</string>
+    <string name="long_press_mute_title">长按迷你窗静音</string>
+    <string name="long_press_mute_summary">仅长按迷你窗时静音当前应用；再次长按恢复，关闭窗口后自动恢复</string>
+    <string name="float_keep_alive_title">贴边挂机</string>
+    <string name="float_keep_alive_summary">收成贴边浮标后让应用继续运行；会增加耗电和发热</string>
 
     <string name="radial_apps_screen_title">扇形快捷项</string>
     <string name="radial_apps_screen_subtitle">最多添加六项，长按拖动调整顺序，与侧边栏独立保存</string>

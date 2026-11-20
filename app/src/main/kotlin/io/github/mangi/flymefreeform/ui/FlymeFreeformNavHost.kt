@@ -36,6 +36,8 @@ internal fun FlymeFreeformNavHost(
     onOutsideTapCloseModeChange: (OutsideTapCloseMode) -> Unit,
     onHandleSwipeUpToMiniEnabledChange: (Boolean) -> Unit,
     onKeepAwakeEnabledChange: (Boolean) -> Unit,
+    onLongPressMuteEnabledChange: (Boolean) -> Unit,
+    onFloatKeepAliveEnabledChange: (Boolean) -> Unit,
     onRadialVibrateEnabledChange: (Boolean) -> Unit,
     onRadialVibrateStrengthChange: (Int) -> Unit,
     onPauseInLandscapeChange: (Boolean) -> Unit,
@@ -77,6 +79,8 @@ internal fun FlymeFreeformNavHost(
                 onHandleSwipeUpToMiniEnabledChange =
                     onHandleSwipeUpToMiniEnabledChange,
                 onKeepAwakeEnabledChange = onKeepAwakeEnabledChange,
+                onLongPressMuteEnabledChange = onLongPressMuteEnabledChange,
+                onFloatKeepAliveEnabledChange = onFloatKeepAliveEnabledChange,
                 onRadialVibrateEnabledChange = onRadialVibrateEnabledChange,
                 onRadialVibrateStrengthChange = onRadialVibrateStrengthChange,
                 onPauseInLandscapeChange = onPauseInLandscapeChange,

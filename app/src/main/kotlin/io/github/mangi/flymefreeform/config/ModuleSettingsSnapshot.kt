@@ -20,11 +20,16 @@ internal data class ModuleSettingsSnapshot(
     val radialVibrateStrength: Int = ModulePreferences.DEFAULT_RADIAL_VIBRATE_STRENGTH,
     val pauseInLandscape: Boolean = ModulePreferences.DEFAULT_PAUSE_IN_LANDSCAPE,
     val pauseInGameMode: Boolean = ModulePreferences.DEFAULT_PAUSE_IN_GAME_MODE,
+    val longPressMuteEnabled: Boolean = ModulePreferences.DEFAULT_LONG_PRESS_MUTE,
+    val floatKeepAlive: Boolean = ModulePreferences.DEFAULT_FLOAT_KEEP_ALIVE,
 ) {
     /** 任一圈里含侧边栏目标（工具/快捷方式/应用/分身）时才需要向原厂拉条目目录。 */
     val hasSidebarPins: Boolean
         get() = pinnedTargets.any { it is PinnedTarget.Sidebar } ||
             innerPinnedTargets.any { it is PinnedTarget.Sidebar }
+
+    val longPressMuteEffective: Boolean get() = enabled && longPressMuteEnabled
+    val floatKeepAliveEffective: Boolean get() = enabled && floatKeepAlive
 
     fun isPausedByEnvironment(landscape: Boolean, gameMode: Boolean): Boolean =
         (pauseInLandscape && landscape) || (pauseInGameMode && gameMode)
@@ -36,6 +41,8 @@ internal data class ModuleSettingsSnapshot(
             .putBoolean(ModulePreferences.KEY_RIGHT_CORNER_ENABLED, rightCornerEnabled)
             .putBoolean(ModulePreferences.KEY_PAUSE_IN_LANDSCAPE, pauseInLandscape)
             .putBoolean(ModulePreferences.KEY_PAUSE_IN_GAME_MODE, pauseInGameMode)
+            .putBoolean(ModulePreferences.KEY_LONG_PRESS_MUTE, longPressMuteEnabled)
+            .putBoolean(ModulePreferences.KEY_FLOAT_KEEP_ALIVE, floatKeepAlive)
             .putInt(
                 ModulePreferences.KEY_CORNER_TRIGGER_RANGE_DP,
                 ModulePreferences.coerceCornerTriggerRangeDp(cornerTriggerRangeDp),
@@ -174,6 +181,14 @@ internal data class ModuleSettingsSnapshot(
                 pauseInGameMode = preferences.getBoolean(
                     ModulePreferences.KEY_PAUSE_IN_GAME_MODE,
                     ModulePreferences.DEFAULT_PAUSE_IN_GAME_MODE,
+                ),
+                longPressMuteEnabled = preferences.getBoolean(
+                    ModulePreferences.KEY_LONG_PRESS_MUTE,
+                    ModulePreferences.DEFAULT_LONG_PRESS_MUTE,
+                ),
+                floatKeepAlive = preferences.getBoolean(
+                    ModulePreferences.KEY_FLOAT_KEEP_ALIVE,
+                    ModulePreferences.DEFAULT_FLOAT_KEEP_ALIVE,
                 ),
             )
         }

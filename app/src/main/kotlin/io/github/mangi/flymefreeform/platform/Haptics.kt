@@ -16,14 +16,18 @@ import io.github.mangi.flymefreeform.config.ModulePreferences
 internal object Haptics {
     private const val DURATION_MS = 80L
 
-    fun tick(context: Context, strengthPercent: Int) {
+    fun tick(context: Context, strengthPercent: Int) = vibrate(context, strengthPercent, DURATION_MS)
+
+    fun confirmation(context: Context) = vibrate(context, 100, 90L)
+
+    private fun vibrate(context: Context, strengthPercent: Int, durationMs: Long) {
         try {
             val vibrator = resolve(context) ?: return
             if (!vibrator.hasVibrator()) return
             val amplitude =
                 (80 + ModulePreferences.coerceRadialVibrateStrength(strengthPercent) * 175 / 100)
                     .coerceIn(80, 255)
-            vibrator.vibrate(VibrationEffect.createOneShot(DURATION_MS, amplitude))
+            vibrator.vibrate(VibrationEffect.createOneShot(durationMs, amplitude))
         } catch (_: RuntimeException) {
             // 触感失败不影响交互
         }

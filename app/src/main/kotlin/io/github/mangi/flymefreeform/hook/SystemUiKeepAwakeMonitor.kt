@@ -105,7 +105,11 @@ internal class SystemUiKeepAwakeMonitor(
         } catch (exception: RuntimeException) {
             module.log(Log.WARN, TAG, "KEEP_AWAKE_DIM_RECEIVER_FAILED", exception)
         }
-        handler.post(poll)
+        configuration.observe { snapshot ->
+            if (!snapshot.enabled || !snapshot.keepAwakeEnabled) {
+                mainHandler.post { releaseScreenOn(); dismissBubble() }
+            }
+        }
         module.log(Log.INFO, TAG, "KEEP_AWAKE_MONITOR_START")
     }
 
@@ -114,7 +118,7 @@ internal class SystemUiKeepAwakeMonitor(
             override fun run() {
                 if (!running) return
                 try {
-                    if (configuration.snapshot.keepAwakeEnabled) {
+                    if (configuration.snapshot.enabled && configuration.snapshot.keepAwakeEnabled) {
                         watchForegroundApp()
                     } else if (bubble != null) {
                         dismissBubble()
@@ -122,7 +126,9 @@ internal class SystemUiKeepAwakeMonitor(
                 } catch (exception: RuntimeException) {
                     logThrottled("KEEP_AWAKE_POLL_FAILED", exception)
                 }
-                handler.postDelayed(this, POLL_INTERVAL_MS)
+                if (configuration.snapshot.enabled && configuration.snapshot.keepAwakeEnabled && wakeLock?.isHeld == true) {
+                    handler.postDelayed(this, POLL_INTERVAL_MS)
+                }
             }
         }
 
@@ -171,11 +177,31 @@ internal class SystemUiKeepAwakeMonitor(
         }
     }
 
+    private var bubbleDownX = 0f
+    private var bubbleSwiped = false
+
     private fun onBubbleTouch(view: View, event: MotionEvent): Boolean {
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> view.setPressed(true)
+            MotionEvent.ACTION_DOWN -> {
+                view.setPressed(true)
+                bubbleDownX = event.rawX
+                bubbleSwiped = false
+            }
+            MotionEvent.ACTION_MOVE -> {
+                // 右滑隐藏：滑出一定距离就把气泡收掉，不触发常亮。
+                if (!bubbleSwiped && event.rawX - bubbleDownX > dp(SWIPE_DISMISS_DP)) {
+                    bubbleSwiped = true
+                    view.setPressed(false)
+                    module.log(Log.DEBUG, TAG, "KEEP_AWAKE_BUBBLE_SWIPED")
+                    dismissBubble()
+                }
+            }
             MotionEvent.ACTION_UP -> {
                 view.setPressed(false)
+                if (bubbleSwiped) {
+                    bubbleSwiped = false
+                    return true
+                }
                 vibrate()
                 keepScreenOn()
                 dismissBubble()
@@ -222,6 +248,8 @@ internal class SystemUiKeepAwakeMonitor(
             if (!lock.isHeld) {
                 lock.acquire()
             }
+            handler.removeCallbacks(poll)
+            handler.post(poll)
             module.log(Log.INFO, TAG, "KEEP_SCREEN_ON_ACQUIRED app=$keepPackage")
         } catch (exception: RuntimeException) {
             logThrottled("KEEP_SCREEN_ON_FAILED", exception)
@@ -308,6 +336,7 @@ internal class SystemUiKeepAwakeMonitor(
     }
 
     private fun releaseScreenOn() {
+        handler.removeCallbacks(poll)
         try {
             keepPackage = null
             val lock = wakeLock ?: return
@@ -361,10 +390,11 @@ internal class SystemUiKeepAwakeMonitor(
         const val POLL_INTERVAL_MS = 1_000L
         const val FOREGROUND_POLL_MS = 2_000L
         const val BUBBLE_AUTO_DISMISS_MS = 6_000L
+        const val SWIPE_DISMISS_DP = 40
         const val BUBBLE_SIZE_DP = 44
         const val BUBBLE_MARGIN_X_DP = 12
         const val BUBBLE_MARGIN_BOTTOM_DP = 96
-        const val VIBRATE_DURATION_MS = 60L
+        const val VIBRATE_DURATION_MS = 90L
         const val VIBRATE_AMPLITUDE = 255
         const val LOG_INTERVAL_MS = 10_000L
         const val COLOR_FALLBACK_BACKGROUND = 0xFFF2B01E.toInt()

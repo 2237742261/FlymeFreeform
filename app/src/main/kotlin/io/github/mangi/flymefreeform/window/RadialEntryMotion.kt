@@ -9,23 +9,16 @@ internal data class RadialEntryVisuals(
     val iconScale: Float,
 )
 
-/** A shared corner expansion followed by a short rotation and translation rebound. */
+/** Corner expansion and selection animation. */
 internal object RadialEntryMotion {
     const val DURATION_MILLIS = 380L
     const val SELECTION_DURATION_MILLIS = 130L
     const val HORIZONTAL_OVERSHOOT_DP = 6f
-    const val SELECTION_RING_ALPHA = 64f / 255f
 
     private const val EXPANSION_MILLIS = 130f
-    private const val REBOUND_MILLIS = 250f
 
     private val fade = CubicMotionCurve(0.33f, 0f, 0.67f, 1f)
-    private val expandRotation = CubicMotionCurve(0.24f, 0.17f, 0.53f, 0.82f)
-    private val expandScale = CubicMotionCurve(0.24f, 0.74f, 0.53f, 0.92f)
     private val expandPosition = CubicMotionCurve(0.24f, 0.55f, 0.53f, 0.8f)
-    private val reboundRotation = CubicMotionCurve(0.19f, -7.6f, 0.48f, 1f)
-    private val reboundScale = CubicMotionCurve(0.19f, 0.31f, 0.48f, 1f)
-    private val reboundPosition = CubicMotionCurve(0.19f, 1.23f, 0.67f, 1f)
     private val selection = CubicMotionCurve(0.33f, 0f, 0.66f, 1f)
 
     fun sample(linearProgress: Float): RadialEntryVisuals {
@@ -42,7 +35,7 @@ internal object RadialEntryMotion {
         )
     }
 
-    /** Animates ring thickness only; the selected icon retains its size. */
+    /** Eases the selected icon growth. */
     fun selectionProgress(linearProgress: Float): Float = selection.sample(linearProgress)
 
 }

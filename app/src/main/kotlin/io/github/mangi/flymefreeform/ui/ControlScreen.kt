@@ -99,6 +99,8 @@ internal fun ControlScreen(
     onOutsideTapCloseModeChange: (OutsideTapCloseMode) -> Unit,
     onHandleSwipeUpToMiniEnabledChange: (Boolean) -> Unit,
     onKeepAwakeEnabledChange: (Boolean) -> Unit,
+    onLongPressMuteEnabledChange: (Boolean) -> Unit,
+    onFloatKeepAliveEnabledChange: (Boolean) -> Unit,
     onRadialVibrateEnabledChange: (Boolean) -> Unit,
     onRadialVibrateStrengthChange: (Int) -> Unit,
     onPauseInLandscapeChange: (Boolean) -> Unit,
@@ -190,6 +192,8 @@ internal fun ControlScreen(
                             onHandleSwipeUpToMiniEnabledChange =
                                 onHandleSwipeUpToMiniEnabledChange,
                             onKeepAwakeEnabledChange = onKeepAwakeEnabledChange,
+                            onLongPressMuteEnabledChange = onLongPressMuteEnabledChange,
+                            onFloatKeepAliveEnabledChange = onFloatKeepAliveEnabledChange,
                             onRadialVibrateEnabledChange = onRadialVibrateEnabledChange,
                             onRadialVibrateStrengthChange = onRadialVibrateStrengthChange,
                         )
@@ -250,6 +254,8 @@ private fun WindowInteractionCard(
     onOutsideTapCloseModeChange: (OutsideTapCloseMode) -> Unit,
     onHandleSwipeUpToMiniEnabledChange: (Boolean) -> Unit,
     onKeepAwakeEnabledChange: (Boolean) -> Unit,
+    onLongPressMuteEnabledChange: (Boolean) -> Unit,
+    onFloatKeepAliveEnabledChange: (Boolean) -> Unit,
     onRadialVibrateEnabledChange: (Boolean) -> Unit,
     onRadialVibrateStrengthChange: (Int) -> Unit,
 ) {
@@ -280,6 +286,22 @@ private fun WindowInteractionCard(
             summary = stringResource(R.string.handle_swipe_up_to_mini_summary),
             enabled = featuresEnabled,
             startAction = { PreferenceIcon(Icons.Rounded.SwipeUp, featuresEnabled) },
+        )
+        SwitchPreference(
+            checked = state.settings.longPressMuteEnabled,
+            onCheckedChange = onLongPressMuteEnabledChange,
+            title = stringResource(R.string.long_press_mute_title),
+            summary = stringResource(R.string.long_press_mute_summary),
+            enabled = featuresEnabled,
+            startAction = { PreferenceIcon(Icons.Rounded.TouchApp, featuresEnabled) },
+        )
+        SwitchPreference(
+            checked = state.settings.floatKeepAlive,
+            onCheckedChange = onFloatKeepAliveEnabledChange,
+            title = stringResource(R.string.float_keep_alive_title),
+            summary = stringResource(R.string.float_keep_alive_summary),
+            enabled = featuresEnabled,
+            startAction = { PreferenceIcon(Icons.Rounded.Apps, featuresEnabled) },
         )
         SwitchPreference(
             checked = state.settings.radialVibrateEnabled,

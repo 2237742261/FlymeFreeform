@@ -81,28 +81,24 @@ internal object RadialGeometry {
         previous: Int?,
         enterRadius: Float,
         keepRadius: Float,
-        outerCount: Int = layout.itemCenters.size,
-        innerRadius: Float = 0f,
         iconRadius: Float = 0f,
     ): Int? {
         if (layout.radius <= 0f) return null
         if (iconRadius > 0f && layout.itemCenters.isNotEmpty()) {
             // 命中判定：手指与图标圆心的距离不超过 1/2 图标直径（也就是手指按在图标上）即选中，
             // 内外圈一起参与比较，取最近的那个；已经选中的图标给一点粘性，避免边界抖动。
-            val hitRadius = iconRadius
-            val stickyRadius = iconRadius * 1.25f
             if (previous != null && previous in layout.itemCenters.indices) {
                 val center = layout.itemCenters[previous]
-                if (hypot(x - center.x, y - center.y) <= stickyRadius) return previous
+                if (hypot(x - center.x, y - center.y) <= iconRadius * 1.25f) return previous
             }
             return layout.itemCenters.indices
+                .filter { index ->
+                    val center = layout.itemCenters[index]
+                    hypot(x - center.x, y - center.y) <= iconRadius
+                }
                 .minByOrNull { index ->
                     val center = layout.itemCenters[index]
                     hypot(x - center.x, y - center.y)
-                }
-                ?.takeIf { index ->
-                    val center = layout.itemCenters[index]
-                    hypot(x - center.x, y - center.y) <= hitRadius
                 }
         }
         if (previous != null && previous in layout.itemCenters.indices) {

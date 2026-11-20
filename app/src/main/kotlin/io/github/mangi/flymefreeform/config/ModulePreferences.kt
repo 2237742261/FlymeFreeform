@@ -14,9 +14,12 @@ internal object ModulePreferences {
     const val EXTRA_INNER_PINNED_TARGETS = "inner_pinned_targets"
     const val EXTRA_INNER_PINS_SAVED = "inner_pins_saved"
     const val EXTRA_MODULE_ENABLED = "module_enabled"
+    const val EXTRA_OUTSIDE_TAP_CLOSE_MODE = "outside_tap_close_mode"
     const val EXTRA_RADIAL_VIBRATE_ENABLED = "radial_vibrate_enabled"
     const val EXTRA_RADIAL_VIBRATE_STRENGTH = "radial_vibrate_strength"
     const val EXTRA_KEEP_AWAKE_ENABLED = "keep_awake_enabled"
+    const val EXTRA_LONG_PRESS_MUTE_ENABLED = "long_press_mute_enabled"
+    const val EXTRA_FLOAT_KEEP_ALIVE_ENABLED = "float_keep_alive_enabled"
     const val KEY_MODULE_ENABLED = "enabled"
     const val KEY_LEFT_CORNER_ENABLED = "corner_left_enabled"
     const val KEY_RIGHT_CORNER_ENABLED = "corner_right_enabled"
@@ -34,6 +37,8 @@ internal object ModulePreferences {
     const val KEY_RADIAL_VIBRATE_STRENGTH = "radial_vibrate_strength_v1"
     const val KEY_PAUSE_IN_LANDSCAPE = "pause_in_landscape"
     const val KEY_PAUSE_IN_GAME_MODE = "pause_in_game_mode"
+    const val KEY_LONG_PRESS_MUTE = "mini_long_press_v1"
+    const val KEY_FLOAT_KEEP_ALIVE = "float_keep_alive_v1"
     const val DEFAULT_ENABLED = true
     const val DEFAULT_CORNER_ENABLED = true
     const val DEFAULT_CORNER_TRIGGER_RANGE_DP = 60
@@ -49,6 +54,8 @@ internal object ModulePreferences {
         value.coerceIn(MIN_RADIAL_VIBRATE_STRENGTH, MAX_RADIAL_VIBRATE_STRENGTH)
     const val DEFAULT_PAUSE_IN_LANDSCAPE = false
     const val DEFAULT_PAUSE_IN_GAME_MODE = false
+    const val DEFAULT_LONG_PRESS_MUTE = false
+    const val DEFAULT_FLOAT_KEEP_ALIVE = false
     const val MIN_CORNER_TRIGGER_RANGE_DP = 24
     const val MAX_CORNER_TRIGGER_RANGE_DP = 160
     const val MAX_OUTER_PINNED_APPS = 6
