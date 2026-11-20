@@ -6,6 +6,7 @@ import android.view.InputDevice
 import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
+import android.view.View
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
 import io.github.mangi.flymefreeform.config.OutsideTapCloseMode
@@ -49,6 +50,12 @@ internal class DoubleTapCaptionCloseHookInstaller(
             // getDeclaredField 只看本类会直接抛异常（这个坑踩过）。
             val captionTaskField = captionClass.requiredField("mTask")
             val captionControllerField = captionClass.requiredField("mFlexibleTaskController")
+            val closeViewField = try {
+                captionClass.requiredField("mCloseView")
+            } catch (_: NoSuchFieldException) {
+                null
+            }
+            val lightOpenClose = controllerClass.requiredMethodOrNull("handleCloseEventForLightOpenIfNeed", 1)
             val isTaskInFlexibleState =
                 controllerClass.requiredMethod(
                     name = "isTaskInFlexibleState",
@@ -105,7 +112,7 @@ internal class DoubleTapCaptionCloseHookInstaller(
                                 }
                             }
                             if (close) closeCaptionTask(captionTaskField, captionControllerField,
-                                isTaskInFlexibleState, exitFlexibleTask, caption)
+                                isTaskInFlexibleState, closeViewField, exitFlexibleTask, lightOpenClose, caption)
                         } catch (exception: ReflectiveOperationException) {
                             synchronized(taps) { taps.remove(caption) }
                             logFailure("CAPTION_TOUCH_REFLECTION_FAILED", exception)
@@ -165,7 +172,9 @@ internal class DoubleTapCaptionCloseHookInstaller(
         captionTaskField: Field,
         captionControllerField: Field,
         isTaskInFlexibleState: Method,
+        closeViewField: Field?,
         exitFlexibleTask: Method,
+        lightOpenClose: Method?,
         caption: Any?,
     ) {
         try {
@@ -180,8 +189,58 @@ internal class DoubleTapCaptionCloseHookInstaller(
                     false
                 }
             if (!ordinary) return
-            exitFlexibleTask.invoke(controller, task, true, 0, 0)
-            module.log(Log.DEBUG, TAG, "CAPTION_DOUBLE_TAP_CLOSE", null)
+            // Reuse the OEM close listener so it owns the return-to-home transition.
+            val closeView = closeViewField?.get(caption) as? View
+            if (closeView != null && closeView.isEnabled) {
+                val clicked = runCatching { closeView.performClick() }.getOrDefault(false)
+                if (clicked) {
+                    module.log(Log.DEBUG, TAG, "CAPTION_DOUBLE_TAP_CLOSE path=native_button", null)
+                    return
+                }
+                val syntheticClick = runCatching {
+                    // dispatchTouchEvent expects coordinates local to the View, not window space.
+                    val x = closeView.width / 2f
+                    val y = closeView.height / 2f
+                    val now = SystemClock.uptimeMillis()
+                    val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0)
+                    val up = MotionEvent.obtain(now, now + 40, MotionEvent.ACTION_UP, x, y, 0)
+                    try {
+                        val downHandled = closeView.dispatchTouchEvent(down)
+                        val upHandled = closeView.dispatchTouchEvent(up)
+                        downHandled && upHandled
+                    } finally {
+                        down.recycle()
+                        up.recycle()
+                    }
+                }.getOrDefault(false)
+                if (syntheticClick) {
+                    module.log(Log.DEBUG, TAG, "CAPTION_DOUBLE_TAP_CLOSE path=native_synthetic_click", null)
+                    return
+                }
+            }
+            // Keep the OEM light-open state coherent, then use its source-aware exit strategy.
+            lightOpenClose?.let { method -> runCatching { method.invoke(controller, caption) } }
+            val strategyClose = runCatching {
+                val loader = controller.javaClass.classLoader
+                val strategyClass = Class.forName(OemClasses.EXIT_FLEXIBLE_TASK_TO_BACK_STRATEGY, false, loader)
+                val constructor = strategyClass.declaredConstructors.firstOrNull {
+                    it.parameterTypes.size == 2 && it.parameterTypes[1] == Boolean::class.javaPrimitiveType
+                } ?: return@runCatching false
+                constructor.isAccessible = true
+                val strategy = constructor.newInstance(task, true)
+                strategyClass.methods.firstOrNull { it.name == "setSourceFrom" && it.parameterTypes.size == 1 }
+                    ?.let { it.isAccessible = true; it.invoke(strategy, 1) }
+                val base = Class.forName(OemClasses.ABS_FLEXIBLE_TASK_EXIT_STRATEGY, false, loader)
+                val inner = controller.javaClass.getMethod("exitFlexibleTaskWindowInnerLocked", base)
+                inner.isAccessible = true
+                inner.invoke(controller, strategy)
+                true
+            }.getOrDefault(false)
+            if (strategyClose) {
+                module.log(Log.DEBUG, TAG, "CAPTION_DOUBLE_TAP_CLOSE path=oem_strategy", null)
+            } else {
+                module.log(Log.WARN, TAG, "CAPTION_DOUBLE_TAP_CLOSE failed_no_legacy_fallback", null)
+            }
         } catch (exception: ReflectiveOperationException) {
             logFailure("CAPTION_CLOSE_REFLECTION_FAILED", exception)
         } catch (exception: RuntimeException) {
